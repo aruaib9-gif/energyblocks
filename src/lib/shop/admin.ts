@@ -3,6 +3,7 @@ import { Binary } from "mongodb";
 import { requireAdmin } from "./auth";
 import { collections, escapeRegex, newId, toApp, withTransaction } from "./db";
 import { event, splitOrder } from "./orders";
+import { deleteObject, imageSrc } from "./storage";
 import type { OrderStatus, Product } from "./schema";
 
 // Admin data access. Every function re-checks the session itself, so a page or action
@@ -71,14 +72,14 @@ export async function adminListProducts(q?: string) {
   const filter = q ? { $or: [{ name: { $regex: escapeRegex(q), $options: "i" } }, { sku: { $regex: escapeRegex(q), $options: "i" } }] } : {};
   const rows = await products.find(filter).sort({ name: 1 }).toArray();
   const firsts = await images
-    .aggregate<{ _id: string; imageId: string }>([
+    .aggregate<{ _id: string; imageId: string; key?: string }>([
       { $match: { productId: { $in: rows.map((r) => r._id) } } },
       { $sort: { position: 1, createdAt: 1 } },
-      { $group: { _id: "$productId", imageId: { $first: "$_id" } } },
+      { $group: { _id: "$productId", imageId: { $first: "$_id" }, key: { $first: "$key" } } },
     ])
     .toArray();
-  const firstFor = new Map(firsts.map((f) => [f._id, f.imageId]));
-  return rows.map((r) => ({ ...toApp(r), imageId: firstFor.get(r._id) ?? null }));
+  const firstFor = new Map(firsts.map((f) => [f._id, imageSrc({ _id: f.imageId, key: f.key ?? undefined })]));
+  return rows.map((r) => ({ ...toApp(r), image: firstFor.get(r._id) ?? null }));
 }
 
 export async function adminGetProduct(id: string) {
@@ -87,10 +88,10 @@ export async function adminGetProduct(id: string) {
   const product = await products.findOne({ _id: id });
   if (!product) return null;
   const imgs = await images
-    .find({ productId: id }, { projection: { _id: 1, position: 1 } })
+    .find({ productId: id }, { projection: { _id: 1, key: 1, position: 1 } })
     .sort({ position: 1, createdAt: 1 })
     .toArray();
-  return { product: toApp(product) as Product, images: imgs.map((i) => ({ id: i._id, position: i.position })) };
+  return { product: toApp(product) as Product, images: imgs.map((i) => ({ id: i._id, url: imageSrc(i) })) };
 }
 
 export async function adminListOrders({ status, q }: { status?: string; q?: string }) {
@@ -184,17 +185,25 @@ export async function removeProduct(id: string) {
   if (sold) {
     await products.updateOne({ _id: id }, { $set: { active: false, updatedAt: Date.now() } });
   } else {
+    const stored = await images.find({ productId: id, key: { $exists: true } }, { projection: { key: 1 } }).toArray();
     await products.deleteOne({ _id: id });
     await images.deleteMany({ productId: id });
+    await Promise.all(stored.map((i) => deleteObject(i.key!)));
   }
 }
 
+async function nextPosition(productId: string) {
+  const { images } = await collections();
+  const last = await images.find({ productId }).sort({ position: -1 }).limit(1).next();
+  return (last?.position ?? -1) + 1;
+}
+
+/** Fallback when Cloudflare R2 isn't configured: stores the bytes in MongoDB. */
 export async function addImages(productId: string, files: { data: Buffer; contentType: string }[]) {
   await requireAdmin();
   if (!files.length) return;
   const { images } = await collections();
-  const last = await images.find({ productId }).sort({ position: -1 }).limit(1).next();
-  const start = (last?.position ?? -1) + 1;
+  const start = await nextPosition(productId);
   await images.insertMany(
     files.map((f, i) => ({
       _id: newId(),
@@ -207,10 +216,29 @@ export async function addImages(productId: string, files: { data: Buffer; conten
   );
 }
 
+/** Records photos the browser has already uploaded to R2 (keys are checked by the caller). */
+export async function attachR2Images(productId: string, uploads: { key: string; contentType: string }[]) {
+  await requireAdmin();
+  if (!uploads.length) return;
+  const { images } = await collections();
+  const start = await nextPosition(productId);
+  await images.insertMany(
+    uploads.map((u, i) => ({
+      _id: newId(),
+      productId,
+      key: u.key,
+      contentType: u.contentType,
+      position: start + i,
+      createdAt: Date.now(),
+    })),
+  );
+}
+
 export async function removeImage(imageId: string) {
   await requireAdmin();
   const { images } = await collections();
-  await images.deleteOne({ _id: imageId });
+  const img = await images.findOneAndDelete({ _id: imageId }, { projection: { key: 1 } });
+  if (img?.key) await deleteObject(img.key);
 }
 
 export async function setPrimaryImage(productId: string, imageId: string) {

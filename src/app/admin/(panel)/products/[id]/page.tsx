@@ -7,6 +7,7 @@ import { ProductForm } from "@/components/admin/product-form";
 import { PageHeader } from "@/components/admin/ui";
 import { Icon } from "@/components/icons";
 import { adminGetProduct } from "@/lib/shop/admin";
+import { r2Enabled } from "@/lib/shop/storage";
 
 export const metadata = { title: "Edit product" };
 
@@ -44,7 +45,7 @@ export default async function EditProductPage({ params, searchParams }: PageProp
         }
       />
       <div className="space-y-6">
-        <ImageManager productId={product.id} images={images} />
+        <ImageManager productId={product.id} images={images} direct={r2Enabled()} />
         <ProductForm product={product} />
       </div>
     </>

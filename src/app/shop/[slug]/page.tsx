@@ -45,7 +45,7 @@ async function Product({ params }: { params: PageProps<"/shop/[slug]">["params"]
       </nav>
 
       <div className="mt-6 grid gap-10 lg:grid-cols-2">
-        <Gallery imageIds={p.imageIds} category={p.category} name={p.name} />
+        <Gallery images={p.images} category={p.category} name={p.name} />
 
         <div>
           <p className="eyebrow">
@@ -67,7 +67,7 @@ async function Product({ params }: { params: PageProps<"/shop/[slug]">["params"]
 
           <div className="mt-8">
             <AddToCart
-              line={{ productId: p.id, slug: p.slug, name: p.name, priceKobo: p.priceKobo, imageId: p.imageIds[0] ?? null, category: p.category, stock: p.stock }}
+              line={{ productId: p.id, slug: p.slug, name: p.name, priceKobo: p.priceKobo, image: p.images[0] ?? null, category: p.category, stock: p.stock }}
             />
           </div>
 

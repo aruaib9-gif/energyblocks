@@ -32,7 +32,7 @@ export default function CartPage() {
             {lines.map((l) => (
               <li key={l.productId} className="flex gap-4 p-4">
                 <Link href={`/shop/${l.slug}`} className="shrink-0 overflow-hidden rounded-xl border border-line">
-                  <ProductVisual imageId={l.imageId} category={l.category} alt={l.name} sizes="96px" className="size-20 sm:size-24" />
+                  <ProductVisual src={l.image} category={l.category} alt={l.name} sizes="96px" className="size-20 sm:size-24" />
                 </Link>
                 <div className="flex min-w-0 flex-1 flex-col">
                   <div className="flex items-start justify-between gap-3">

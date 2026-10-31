@@ -70,13 +70,9 @@ export function ProductForm({ product }: { product?: Product }) {
         </Panel>
 
         {!product && (
-          <Panel title="Images">
-            <div className="p-5">
-              <F label="Upload photos" error={fe.images} hint="JPEG, PNG or WebP, up to 4 MB each. The first becomes the main image.">
-                <input name="images" type="file" accept="image/jpeg,image/png,image/webp" multiple className={`${adminField} file:mr-3 file:rounded-full file:border-0 file:bg-brand-soft file:px-3 file:py-1 file:text-sm file:font-medium file:text-brand`} />
-              </F>
-            </div>
-          </Panel>
+          <p className="rounded-xl border border-dashed border-line bg-white/60 px-4 py-3 text-sm text-muted">
+            You can add photos as soon as the product is created.
+          </p>
         )}
       </div>
 

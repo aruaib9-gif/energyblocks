@@ -12,7 +12,16 @@ export type ProductDoc = WithMongoId<Product>;
 export type OrderDoc = WithMongoId<Order> & { items: OrderItem[]; events: OrderEvent[] };
 export type PaymentDoc = WithMongoId<Payment>;
 export type AdminDoc = WithMongoId<Admin>;
-export type ImageDoc = { _id: string; productId: string; data: Binary; contentType: string; position: number; createdAt: number };
+/** A product photo: `key` when stored on Cloudflare R2, `data` for the older in-database storage. */
+export type ImageDoc = {
+  _id: string;
+  productId: string;
+  key?: string;
+  data?: Binary;
+  contentType: string;
+  position: number;
+  createdAt: number;
+};
 
 const g = globalThis as unknown as { ebMongo?: MongoClient; ebIndexes?: Promise<unknown> };
 

@@ -9,7 +9,8 @@ export type CartLine = {
   slug: string;
   name: string;
   priceKobo: number;
-  imageId: string | null;
+  /** Main image URL. */
+  image: string | null;
   category: string;
   stock: number;
   quantity: number;
@@ -26,7 +27,11 @@ function read(): CartLine[] {
     let lines: CartLine[] = EMPTY;
     try {
       const parsed = raw ? JSON.parse(raw) : [];
-      if (Array.isArray(parsed)) lines = parsed;
+      // Carts saved before images moved to URLs carry an `imageId` instead.
+      if (Array.isArray(parsed))
+        lines = parsed.map((l) =>
+          "image" in l ? l : { ...l, image: l.imageId ? `/api/shop/images/${l.imageId}` : null },
+        );
     } catch {}
     cache = { raw, lines };
   }

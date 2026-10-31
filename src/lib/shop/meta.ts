@@ -101,4 +101,3 @@ export function parseSpecs(specs: string) {
     });
 }
 
-export const imageUrl = (id: string) => `/api/shop/images/${id}`;

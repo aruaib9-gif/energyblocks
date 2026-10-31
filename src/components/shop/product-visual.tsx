@@ -1,27 +1,28 @@
 import Image from "next/image";
-import { categoryOf, imageUrl } from "@/lib/shop/meta";
+import { categoryOf } from "@/lib/shop/meta";
 import { Icon } from "../icons";
 
 /** A product's uploaded photo, or a branded category tile until one is uploaded. */
 export function ProductVisual({
-  imageId,
+  src,
   category,
   alt,
   sizes,
   preload = false,
   className = "",
 }: {
-  imageId: string | null | undefined;
+  /** Image URL (Cloudflare CDN or the app's image route), or nothing for a placeholder tile. */
+  src: string | null | undefined;
   category: string;
   alt: string;
   sizes: string;
   preload?: boolean;
   className?: string;
 }) {
-  if (imageId) {
+  if (src) {
     return (
       <div className={`relative overflow-hidden bg-white ${className}`}>
-        <Image src={imageUrl(imageId)} alt={alt} fill sizes={sizes} preload={preload} className="object-contain p-3" />
+        <Image src={src} alt={alt} fill sizes={sizes} preload={preload} className="object-contain p-3" />
       </div>
     );
   }

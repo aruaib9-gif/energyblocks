@@ -50,7 +50,7 @@ export default async function ProductsPage({ searchParams }: PageProps<"/admin/p
                   <tr key={p.id} className="hover:bg-background/40">
                     <td className="px-5 py-2.5">
                       <Link href={`/admin/products/${p.id}`} className="flex items-center gap-3">
-                        <ProductVisual imageId={p.imageId} category={p.category} alt="" sizes="48px" className="size-11 shrink-0 rounded-lg border border-line [&_span]:size-8 [&_svg]:size-4" />
+                        <ProductVisual src={p.image} category={p.category} alt="" sizes="48px" className="size-11 shrink-0 rounded-lg border border-line [&_span]:size-8 [&_svg]:size-4" />
                         <span>
                           <span className="block font-semibold hover:text-brand">{p.name}</span>
                           {p.sku && <span className="text-xs text-muted">SKU {p.sku}</span>}

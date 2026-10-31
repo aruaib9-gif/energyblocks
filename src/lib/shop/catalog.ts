@@ -1,6 +1,7 @@
 import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
 import { collections, escapeRegex, toApp, type ProductDoc } from "./db";
+import { imageSrc } from "./storage";
 
 // Public catalogue reads. Cached and tagged "products"; admin edits and paid orders
 // (which change stock) invalidate the tag.
@@ -13,13 +14,14 @@ async function withImages(rows: ProductDoc[]) {
   const ids = rows.map((r) => r._id);
   const imgs = ids.length
     ? await images
-        .find({ productId: { $in: ids } }, { projection: { _id: 1, productId: 1 } })
+        .find({ productId: { $in: ids } }, { projection: { _id: 1, productId: 1, key: 1 } })
         .sort({ position: 1, createdAt: 1 })
         .toArray()
     : [];
   return rows.map((r) => ({
     ...toApp(r),
-    imageIds: imgs.filter((i) => i.productId === r._id).map((i) => i._id),
+    /** Image URLs, main image first. */
+    images: imgs.filter((i) => i.productId === r._id).map(imageSrc),
   }));
 }
 
@@ -65,9 +67,11 @@ export async function getRelatedProducts(category: string, excludeId: string) {
   return withImages(rows);
 }
 
-/** Raw image bytes for the image route. Not cached here — the route sets immutable HTTP caching. */
+/** Raw bytes for images stored in MongoDB (before R2). Not cached here — the route sets immutable HTTP caching. */
 export async function getImage(id: string) {
   const { images } = await collections();
-  const img = await images.findOne({ _id: id }, { projection: { data: 1, contentType: 1 } });
-  return img ? { data: img.data.buffer, contentType: img.contentType } : null;
+  const img = await images.findOne({ _id: id }, { projection: { data: 1, key: 1, contentType: 1 } });
+  if (!img) return null;
+  if (img.key) return { redirect: imageSrc(img) };
+  return img.data ? { data: img.data.buffer, contentType: img.contentType } : null;
 }

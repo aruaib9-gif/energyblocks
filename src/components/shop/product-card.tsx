@@ -6,12 +6,12 @@ import { ProductVisual } from "./product-visual";
 
 export function ProductCard({ product }: { product: CatalogProduct }) {
   const p = product;
-  const imageId = p.imageIds[0] ?? null;
+  const image = p.images[0] ?? null;
   return (
     <article className="card lift group flex flex-col overflow-hidden">
       <Link href={`/shop/${p.slug}`} className="relative block">
         <ProductVisual
-          imageId={imageId}
+          src={image}
           category={p.category}
           alt={p.name}
           sizes="(min-width: 1024px) 25vw, (min-width: 640px) 33vw, 50vw"
@@ -44,7 +44,7 @@ export function ProductCard({ product }: { product: CatalogProduct }) {
           </p>
           <AddToCart
             compact
-            line={{ productId: p.id, slug: p.slug, name: p.name, priceKobo: p.priceKobo, imageId, category: p.category, stock: p.stock }}
+            line={{ productId: p.id, slug: p.slug, name: p.name, priceKobo: p.priceKobo, image, category: p.category, stock: p.stock }}
           />
         </div>
       </div>

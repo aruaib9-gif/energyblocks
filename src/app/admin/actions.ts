@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   addImages,
   applyOrderUpdate,
+  attachR2Images,
   clearStockIssue,
   getOrderForUpdate,
   markOrderRefunded,
@@ -18,12 +19,20 @@ import {
 } from "@/lib/shop/admin";
 import { changePassword, createAdmin, requireAdmin, signIn, signOut } from "@/lib/shop/auth";
 import { PRODUCTS_TAG } from "@/lib/shop/catalog";
-import { isDuplicateKey } from "@/lib/shop/db";
+import { isDuplicateKey, newId } from "@/lib/shop/db";
 import { sendEmail, statusUpdateEmail } from "@/lib/shop/email";
 import { categories, nextStatuses, orderStatusLabels, slugify } from "@/lib/shop/meta";
 import { settlePayment } from "@/lib/shop/orders";
 import type { OrderStatus } from "@/lib/shop/schema";
 import { siteUrl } from "@/lib/shop/site-url";
+import {
+  ALLOWED_IMAGE_TYPES,
+  MAX_IMAGE_BYTES as MAX_R2_BYTES,
+  deleteObject,
+  inspectUpload,
+  presignUpload,
+  r2Enabled,
+} from "@/lib/shop/storage";
 
 export type FormState = { error?: string; ok?: string; fieldErrors?: Record<string, string> };
 
@@ -123,13 +132,6 @@ export async function saveProduct(_prev: FormState, formData: FormData): Promise
   const slug = slugify(d.slug || d.name);
   if (!slug) return { fieldErrors: { slug: "Use letters or numbers" } };
 
-  let images;
-  try {
-    images = await readImages(formData);
-  } catch (e) {
-    return { fieldErrors: { images: (e as Error).message } };
-  }
-
   let productId: string;
   try {
     productId = await upsertProduct(id, {
@@ -150,7 +152,6 @@ export async function saveProduct(_prev: FormState, formData: FormData): Promise
     if (isDuplicateKey(e)) return { fieldErrors: { slug: "Another product already uses this URL slug" } };
     throw e;
   }
-  await addImages(productId, images);
   updateTag(PRODUCTS_TAG);
   if (!id) redirect(`/admin/products/${productId}?saved=1`);
   refresh();
@@ -175,6 +176,52 @@ export async function uploadImages(_prev: FormState, formData: FormData): Promis
   updateTag(PRODUCTS_TAG);
   refresh();
   return { ok: "Uploaded." };
+}
+
+/* Direct-to-Cloudflare uploads: the browser asks for signed URLs, PUTs each file to R2,
+   then calls finishImageUploads so the server can verify the files and record them. */
+
+export type UploadTicket = { key: string; url: string };
+
+const EXT: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+
+export async function requestImageUploads(
+  productId: string,
+  files: { type: string; size: number }[],
+): Promise<{ tickets?: UploadTicket[]; error?: string }> {
+  await requireAdmin();
+  if (!r2Enabled()) return { error: "Cloudflare R2 isn't configured." };
+  if (files.length === 0) return { error: "Choose at least one image." };
+  if (files.length > 8) return { error: "Upload up to 8 images at a time." };
+  for (const f of files) {
+    if (!(ALLOWED_IMAGE_TYPES as readonly string[]).includes(f.type)) return { error: "Only JPEG, PNG or WebP images." };
+    if (f.size > MAX_R2_BYTES) return { error: "Each image must be 8 MB or smaller." };
+  }
+  const tickets = await Promise.all(
+    files.map(async (f) => {
+      const key = `products/${productId}/${newId()}.${EXT[f.type]}`;
+      return { key, url: await presignUpload(key) };
+    }),
+  );
+  return { tickets };
+}
+
+export async function finishImageUploads(productId: string, keys: string[]): Promise<FormState> {
+  await requireAdmin();
+  const prefix = `products/${productId}/`;
+  const unique = [...new Set(keys)].filter((k) => k.startsWith(prefix) && !k.includes("..")).slice(0, 8);
+  const checked = await Promise.all(unique.map(async (key) => ({ key, result: await inspectUpload(key) })));
+  const good = checked.flatMap((c) => (c.result.ok ? [{ key: c.key, contentType: c.result.contentType }] : []));
+  const bad = checked.filter((c) => !c.result.ok);
+  await Promise.all(bad.map((b) => deleteObject(b.key)));
+  await attachR2Images(productId, good);
+  if (good.length) updateTag(PRODUCTS_TAG);
+  refresh();
+  if (bad.length) {
+    const reason = (bad[0].result as { reason: string }).reason;
+    return { error: `${good.length} uploaded, ${bad.length} rejected: ${reason}` };
+  }
+  return { ok: `${good.length} image${good.length === 1 ? "" : "s"} uploaded to Cloudflare.` };
 }
 
 export async function deleteImage(formData: FormData) {
