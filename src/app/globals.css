@@ -1,26 +1,333 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Blueprint blues drawn from the logo's royal blue */
+  --background: #d5e0f2;
+  --background-alt: #c6d5ed;
+  --foreground: #13213a;
+  --card: #ffffff;
+  --muted-foreground: #44506a;
+  --border: #b5c6e2;
+  --brand: #0b47a8;
+  --brand-strong: #083683;
+  --brand-light: #0b47a8;
+  --brand-soft: #dbe6f7;
+  --accent: #e3222b;
+  --highlight: #ffc72c;
+  --ink: #0a1a36;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-background-alt: var(--background-alt);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-muted: var(--muted-foreground);
+  --color-line: var(--border);
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-light: var(--brand-light);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent: var(--accent);
+  --color-highlight: var(--highlight);
+  --color-ink: var(--ink);
+  --font-sans: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-fraunces), Georgia, "Times New Roman", serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--brand);
+  color: #fff;
+}
+
+@utility eyebrow {
+  @apply text-[11px] font-semibold uppercase tracking-[0.22em] text-muted;
+}
+
+@utility display {
+  @apply font-semibold tracking-[-0.035em] text-foreground;
+}
+
+@utility serif-accent {
+  @apply font-serif font-semibold italic tracking-[-0.01em] text-brand-light;
+}
+
+@utility card {
+  @apply rounded-2xl border border-line bg-card;
+}
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand;
+}
+
+@utility btn-primary {
+  @apply btn bg-brand text-white shadow-sm hover:bg-brand-strong;
+}
+
+@utility btn-outline {
+  @apply btn border border-foreground/20 bg-card text-foreground shadow-[0_1px_0_rgba(0,0,0,0.06)] hover:border-foreground/40;
+}
+
+@utility section {
+  @apply border-t border-line px-6 py-24 sm:py-28;
+}
+
+@utility container-x {
+  @apply mx-auto w-full max-w-[1100px];
+}
+
+/* Faint blueprint grid used behind the hero */
+.blueprint-grid {
+  background-image:
+    linear-gradient(rgba(11, 71, 168, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(11, 71, 168, 0.1) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse 80% 70% at 60% 30%, #000 30%, transparent 75%);
+}
+
+/* Safety-yellow hazard stripe, as on site barriers */
+.hazard-stripe {
+  background: repeating-linear-gradient(-45deg, var(--highlight) 0 14px, var(--ink) 14px 28px);
+}
+
+/* Gentle entrance for the hero panel's rows */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-rise {
+  animation: rise 0.45s ease-out both;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.caret {
+  animation: blink 1s step-end infinite;
+}
+
+/* ---------- Scroll effects (driven by components/scroll-fx.tsx) ---------- */
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Reading-progress bar along the top edge, in hazard colours */
+.scroll-progress {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 60;
+  height: 3px;
+  transform-origin: 0 50%;
+  transform: scaleX(var(--progress, 0));
+  background: linear-gradient(90deg, var(--accent), var(--highlight) 55%, var(--brand));
+  pointer-events: none;
+}
+
+/* Hidden states only apply once the inline script has confirmed JS + motion are on */
+html[data-fx] [data-reveal],
+html[data-fx] [data-stagger] > * {
+  opacity: 0;
+  transform: translate3d(0, 32px, 0);
+  --d: calc(var(--i, 0) * 90ms);
+  /* Hover properties are listed too so .lift keeps its transition, with no stagger delay */
+  transition:
+    opacity 0.9s var(--ease-out) var(--d),
+    transform 1.1s var(--ease-out) var(--d),
+    translate 0.4s var(--ease-out),
+    box-shadow 0.4s var(--ease-out),
+    border-color 0.3s;
+}
+html[data-fx] [data-stagger] > * {
+  transform: translate3d(0, 24px, 0);
+}
+html[data-fx] [data-reveal="left"] {
+  transform: translate3d(-48px, 0, 0);
+}
+html[data-fx] [data-reveal="right"] {
+  transform: translate3d(48px, 0, 0);
+}
+html[data-fx] [data-reveal="zoom"] {
+  transform: scale(0.92);
+}
+/* Photos fade in while settling from a slight zoom */
+html[data-fx] [data-reveal="photo"] {
+  transform: none;
+}
+html[data-fx] [data-reveal="photo"] img {
+  transform: scale(1.12);
+  transition: transform 1.6s var(--ease-out) calc(var(--i, 0) * 110ms);
+}
+html[data-fx] [data-stagger][data-shown] > *,
+html[data-fx] [data-reveal][data-shown] {
+  opacity: 1;
+  transform: none;
+}
+html[data-fx] [data-reveal="photo"][data-shown] img {
+  transform: none;
+}
+
+/* Red rule before each section eyebrow draws itself in */
+.eyebrow-rule {
+  display: inline-block;
+  width: 28px;
+  height: 2px;
+  margin-right: 10px;
+  vertical-align: middle;
+  background: var(--accent);
+  transform-origin: left;
+}
+html[data-fx] [data-shown] .eyebrow-rule,
+html[data-fx] [data-shown] > * .eyebrow-rule {
+  animation: draw 0.9s var(--ease-out) 0.25s both;
+}
+@keyframes draw {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* Hero entrance — pure CSS so first paint never waits for JS */
+@keyframes intro-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 28px, 0);
+  }
+}
+@keyframes intro-photo {
+  from {
+    clip-path: inset(100% 0 0 0 round 24px);
+  }
+  to {
+    clip-path: inset(0 0 0 0 round 24px);
+  }
+}
+@keyframes intro-zoom {
+  from {
+    transform: scale(1.2);
+  }
+}
+.intro > * {
+  animation: intro-up 1s var(--ease-out) both;
+}
+.intro > :nth-child(2) { animation-delay: 0.08s; }
+.intro > :nth-child(3) { animation-delay: 0.16s; }
+.intro > :nth-child(4) { animation-delay: 0.24s; }
+.intro > :nth-child(5) { animation-delay: 0.32s; }
+.intro > :nth-child(6) { animation-delay: 0.4s; }
+.intro > :nth-child(7) { animation-delay: 0.48s; }
+.intro-photo {
+  animation: intro-photo 1.4s var(--ease-out) 0.15s both;
+}
+.intro-photo img {
+  animation: intro-zoom 2.2s var(--ease-out) 0.15s both;
+}
+.intro-late {
+  animation: intro-up 1s var(--ease-out) 0.7s both;
+}
+
+/* Header firms up once the page has scrolled */
+header {
+  transition:
+    background-color 0.3s,
+    box-shadow 0.3s;
+}
+html[data-scrolled] header {
+  background-color: color-mix(in srgb, var(--background) 94%, transparent);
+  box-shadow: 0 10px 30px -18px rgba(19, 33, 58, 0.35);
+}
+header nav a[data-active] {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 6px;
+}
+
+/* Scroll-linked ticker: rows slide in opposite directions as --p goes 0 → 1 */
+.ticker-row {
+  translate: calc((var(--p, 0.5) - 0.5) * -40%) 0;
+  will-change: translate;
+}
+.ticker-row.reverse {
+  translate: calc((var(--p, 0.5) - 0.5) * 40% - 20%) 0;
+}
+
+/* Scrubbed vertical progress line (mobilisation timeline) */
+.scrub-line {
+  transform-origin: top;
+  transform: scaleY(clamp(0, calc(var(--p, 1) * 1.6 - 0.3), 1));
+}
+
+/* Back-to-top ring fills with reading progress */
+.back-to-top-ring {
+  /* Units are needed in CSS; with pathLength=100 they still map to percent of the ring */
+  stroke-dasharray: 100px;
+  stroke-dashoffset: calc((1 - var(--progress, 0)) * 100px);
+  transition: stroke-dashoffset 0.15s linear;
+}
+
+/* Soft lift on interactive cards */
+.lift {
+  transition:
+    translate 0.4s var(--ease-out),
+    box-shadow 0.4s var(--ease-out),
+    border-color 0.3s;
+}
+.lift:hover {
+  translate: 0 -4px;
+  box-shadow: 0 24px 40px -28px rgba(19, 33, 58, 0.45);
+  border-color: color-mix(in srgb, var(--brand) 35%, var(--border));
+}
+
+@media print {
+  html[data-fx] [data-reveal],
+  html[data-fx] [data-stagger] > * {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-rise,
+  .caret,
+  .intro > *,
+  .intro-photo,
+  .intro-photo img,
+  .intro-late,
+  .eyebrow-rule {
+    animation: none !important;
+  }
+  .ticker-row,
+  .ticker-row.reverse {
+    translate: none;
+  }
+  .scrub-line {
+    transform: none;
+  }
+  .lift:hover {
+    translate: none;
+  }
 }
