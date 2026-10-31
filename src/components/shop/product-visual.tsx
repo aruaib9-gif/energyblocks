@@ -29,7 +29,7 @@ export function ProductVisual({
   const c = categoryOf(category);
   return (
     <div
-      className={`relative grid place-items-center overflow-hidden bg-gradient-to-br from-brand-soft to-card ${className}`}
+      className={`relative grid place-items-center overflow-hidden bg-linear-to-br from-brand-soft to-card ${className}`}
       role="img"
       aria-label={alt}
     >

@@ -85,7 +85,7 @@ body {
 }
 
 @utility container-x {
-  @apply mx-auto w-full max-w-[1100px];
+  @apply mx-auto w-full max-w-275;
 }
 
 /* Faint blueprint grid used behind the hero */

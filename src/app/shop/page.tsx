@@ -122,7 +122,7 @@ function CatalogueSkeleton() {
       <div className="h-10 w-2/3 animate-pulse rounded-full bg-card" />
       <div className="mt-14 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {Array.from({ length: 8 }, (_, i) => (
-          <div key={i} className="card aspect-[3/4] animate-pulse" />
+          <div key={i} className="card aspect-3/4 animate-pulse" />
         ))}
       </div>
     </div>

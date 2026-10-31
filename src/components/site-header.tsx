@@ -21,14 +21,14 @@ export function SiteHeader() {
         <a href="#top" aria-label="Energy Blocks Construction Ltd — home">
           <Logo />
         </a>
-        <nav aria-label="Primary" className="hidden flex-1 items-center gap-6 text-sm text-foreground/80 md:flex">
+        <nav aria-label="Primary" className="hidden flex-1 items-center gap-6 text-sm text-foreground/80 xl:flex">
           {navLinks.map((l) => (
-            <a key={l.href} href={l.href} className="transition-colors hover:text-foreground">
+            <a key={l.href} href={l.href} className="whitespace-nowrap transition-colors hover:text-foreground">
               {l.label}
             </a>
           ))}
         </nav>
-        <div className="ml-auto hidden items-center gap-5 md:flex">
+        <div className="ml-auto hidden items-center gap-5 xl:flex">
           <a href={company.phoneHref} className="text-sm font-medium hover:text-brand-light">
             Call us
           </a>
@@ -38,7 +38,7 @@ export function SiteHeader() {
         </div>
         <button
           type="button"
-          className="ml-auto rounded-full p-2 md:hidden"
+          className="ml-auto rounded-full p-2 xl:hidden"
           aria-expanded={open}
           aria-controls="mobile-nav"
           aria-label={open ? "Close menu" : "Open menu"}
@@ -48,7 +48,7 @@ export function SiteHeader() {
         </button>
       </div>
       {open && (
-        <nav id="mobile-nav" aria-label="Mobile" className="border-t border-line bg-background px-6 pb-6 md:hidden">
+        <nav id="mobile-nav" aria-label="Mobile" className="border-t border-line bg-background px-6 pb-6 xl:hidden">
           <ul className="flex flex-col divide-y divide-line">
             {navLinks.map((l) => (
               <li key={l.href}>

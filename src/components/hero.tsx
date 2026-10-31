@@ -75,14 +75,27 @@ export function Hero() {
             <br />
             <span className="serif-accent">You pay later.</span>
           </h1>
-          <p className="mt-6 max-w-130 text-[19px] leading-[1.5] font-medium text-foreground">
+          <p className="mt-6 max-w-130 text-[19px] leading-normal font-medium text-foreground">
             No deposit. No waiting for funds. Your project starts today — and you pay
             from the progress, not before it.
           </p>
-          <ul className="mt-5 flex flex-wrap gap-2 text-[13px] font-semibold">
-            {["₦0 to start", "Pay per milestone", "On site in 72 hours"].map((t) => (
-              <li key={t} className="flex items-center gap-1.5 rounded-full border border-brand/25 bg-card px-3 py-1.5 text-brand">
-                <Icon name="check" className="size-3.5" /> {t}
+          {/* Phones: three equal tiles in one row, each label on one line (shorter wording,
+              text scales down on very narrow screens) · larger screens: inline pills */}
+          <ul className="mt-5 grid grid-cols-3 gap-2 text-[clamp(10.5px,3.2vw,12.5px)] leading-tight font-semibold sm:flex sm:flex-wrap sm:text-[13px]">
+            {[
+              { short: "₦0 to start", full: "₦0 to start" },
+              { short: "Milestone pay", full: "Pay per milestone" },
+              { short: "On site in 72h", full: "On site in 72 hours" },
+            ].map((t) => (
+              <li
+                key={t.full}
+                className="flex min-w-0 flex-col items-center justify-center gap-1.5 rounded-2xl border border-brand/25 bg-card px-1 py-2.5 text-center text-brand sm:flex-row sm:gap-1.5 sm:rounded-full sm:px-3 sm:py-1.5"
+              >
+                <span className="grid size-5 shrink-0 place-items-center rounded-full bg-brand-soft sm:size-auto sm:bg-transparent">
+                  <Icon name="check" className="size-3.5" />
+                </span>
+                <span className="whitespace-nowrap sm:hidden">{t.short}</span>
+                <span className="whitespace-nowrap max-sm:hidden">{t.full}</span>
               </li>
             ))}
           </ul>
@@ -104,11 +117,12 @@ export function Hero() {
             </button>
           </form>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <a href="#contact" className="btn-primary">
+          {/* Phones: equal full-width buttons · larger screens: side by side */}
+          <div className="mt-8 grid gap-3 sm:flex sm:flex-wrap">
+            <a href="#contact" className="btn-primary py-3 sm:py-2.5">
               Start building today <Icon name="arrowRight" />
             </a>
-            <a href="#payment" className="btn-outline">
+            <a href="#payment" className="btn-outline py-3 sm:py-2.5">
               How pay-later works <Icon name="arrowRight" />
             </a>
           </div>
@@ -120,7 +134,7 @@ export function Hero() {
         </div>
 
         <div className="relative min-w-0 lg:pb-20 lg:pl-12">
-          <div data-parallax="-0.06" className="intro-photo relative aspect-[4/5] overflow-hidden rounded-3xl border border-line bg-background-alt shadow-[0_40px_80px_-40px_rgba(19,33,58,0.5)] max-lg:aspect-[4/3]">
+          <div data-parallax="-0.06" className="intro-photo relative aspect-4/5 overflow-hidden rounded-3xl border border-line bg-background-alt shadow-[0_40px_80px_-40px_rgba(19,33,58,0.5)] max-lg:aspect-4/3">
             <Image
               src={photos.engineersBlueprint}
               alt="An Energy Blocks engineer and technician reviewing technical drawings in the workshop"
@@ -130,7 +144,7 @@ export function Hero() {
               sizes="(min-width: 1024px) 45vw, 100vw"
               className="scale-[1.06] object-cover object-[50%_30%]"
             />
-            <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-t from-ink/35 via-transparent to-transparent" />
+            <div aria-hidden="true" className="absolute inset-0 bg-linear-to-t from-ink/35 via-transparent to-transparent" />
             <span className="absolute top-4 right-4 flex items-center gap-2 rounded-full bg-highlight px-3 py-1.5 text-xs font-semibold text-ink shadow-sm">
               <Icon name="hardhat" className="size-3.5" /> On site in 72 hours
             </span>

@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: PageProps<"/shop/[slug]">): P
 
 export default function ProductPage({ params }: PageProps<"/shop/[slug]">) {
   return (
-    <Suspense fallback={<div className="container-x mt-10 aspect-[2/1] animate-pulse rounded-2xl bg-card px-6" />}>
+    <Suspense fallback={<div className="container-x mt-10 aspect-2/1 animate-pulse rounded-2xl bg-card px-6" />}>
       <Product params={params} />
     </Suspense>
   );

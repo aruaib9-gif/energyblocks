@@ -55,11 +55,13 @@ function Heading({
   title,
   lead,
   center = false,
+  titleClassName = "text-[34px] sm:text-[42px]",
 }: {
   eyebrow: string;
   title: React.ReactNode;
   lead?: React.ReactNode;
   center?: boolean;
+  titleClassName?: string;
 }) {
   return (
     <div data-stagger className={center ? "mx-auto max-w-170 text-center" : "max-w-170"}>
@@ -67,7 +69,7 @@ function Heading({
         <span aria-hidden="true" className="eyebrow-rule" />
         {eyebrow}
       </p>
-      <h2 className="display mt-4 text-[34px] leading-[1.08] sm:text-[42px]">{title}</h2>
+      <h2 className={`display mt-4 leading-[1.08] ${titleClassName}`}>{title}</h2>
       {lead && <p className="mt-4 text-[17px] leading-[1.6] text-foreground/80">{lead}</p>}
     </div>
   );
@@ -75,19 +77,26 @@ function Heading({
 
 export function StandardsStrip() {
   return (
-    <div className="border-y border-line px-6 py-5">
-      <div data-stagger className="container-x flex flex-wrap items-center justify-center gap-x-7 gap-y-3">
-        <span className="eyebrow mr-2">Standards we work to</span>
-        {standards.map((s) => (
-          <span key={s.code} className="flex items-center gap-2 text-[14.5px] text-foreground/85">
-            <span className="rounded-full border border-line bg-card px-2 py-0.5 text-[10.5px] font-semibold tracking-wide">
-              {s.code}
-            </span>
-            {s.label}
-          </span>
-        ))}
+    <section aria-label="Standards we work to" className="border-y border-line px-6 py-6">
+      <div className="container-x flex flex-col gap-4">
+        <h2 className="eyebrow text-center">Standards we work to</h2>
+        {/* Matching tiles: 2-up on phones (the odd one spans the row), 3 + 2 centred on tablets,
+            5 across on desktop. Tablets use a 6-column grid so the second row can be centred. */}
+        <ul data-stagger className="grid grid-cols-2 gap-2.5 sm:grid-cols-6 lg:grid-cols-5">
+          {standards.map((s) => (
+            <li
+              key={s.code}
+              className="flex min-w-0 items-center gap-2.5 rounded-xl border border-line bg-card/70 px-3 py-2.5 max-sm:last:col-span-2 max-sm:last:justify-center sm:col-span-2 sm:nth-4:col-start-2 lg:col-span-1 lg:nth-4:col-start-auto"
+            >
+              <span className="shrink-0 rounded-full border border-line bg-card px-2 py-0.5 text-[10.5px] font-semibold tracking-wide">
+                {s.code}
+              </span>
+              <span className="text-[13.5px] leading-snug text-foreground/85">{s.label}</span>
+            </li>
+          ))}
+        </ul>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -126,7 +135,7 @@ export function PhotoBand() {
   ];
   return (
     <section aria-label="Energy Blocks at work" className="px-6 pt-4 pb-16">
-      <div className="container-x grid auto-rows-[150px] grid-cols-2 gap-3 sm:auto-rows-[190px] md:grid-cols-4">
+      <div className="container-x grid auto-rows-37.5 grid-cols-2 gap-3 sm:auto-rows-47.5 md:grid-cols-4">
         {shots.map((p, i) => (
           <Photo
             key={p.alt}
@@ -150,7 +159,7 @@ export function About() {
           <Photo
             src={photos.constructionSite}
             alt="Construction crew and concrete mixer on a multi-storey build"
-            className="aspect-[4/5] w-full max-w-md"
+            className="aspect-4/5 w-full max-w-md"
           />
           <div
             data-parallax="-0.12"
@@ -159,7 +168,7 @@ export function About() {
             <Photo
               src={photos.pipeMaintenance}
               alt="Two technicians in respirators servicing a flanged pipeline"
-              className="aspect-[3/2]"
+              className="aspect-3/2"
               sizes="(min-width: 1024px) 30vw, 60vw"
             />
           </div>
@@ -218,11 +227,13 @@ export function OldWays() {
       <Heading
         center
         eyebrow="The old ways"
+        // Always exactly two lines: the size scales with the screen so the longer line
+        // (~10.5× the font size wide) fits inside the 24px side padding, up to 42px.
+        titleClassName="text-[min(42px,calc((100vw-48px)/11))]"
         title={
           <>
-            You&rsquo;ve had three options.
-            <br />
-            None of them worked.
+            <span className="block whitespace-nowrap">You&rsquo;ve had three options.</span>
+            <span className="block whitespace-nowrap">None of them worked.</span>
           </>
         }
       />
@@ -296,7 +307,7 @@ export function Services() {
         <div data-stagger className="mt-12 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
           {services.map((s) => (
             <article key={s.title} className="card lift group overflow-hidden">
-              <div className="relative aspect-[4/3] overflow-hidden">
+              <div className="relative aspect-4/3 overflow-hidden">
                 <Image
                   src={s.image}
                   alt=""
@@ -367,13 +378,13 @@ export function Mobilisation() {
       <Photo
         src={photos.excavators}
         alt="Excavators ready to mobilise at sunset"
-        className="mx-auto mt-12 aspect-[16/7] max-w-3xl"
+        className="mx-auto mt-12 aspect-16/7 max-w-3xl"
         sizes="(min-width: 768px) 768px, 100vw"
       />
       <div data-scrub className="relative mx-auto mt-4 max-w-3xl">
         <span
           aria-hidden="true"
-          className="scrub-line absolute top-4 bottom-4 -left-3 w-[3px] rounded-full bg-gradient-to-b from-accent to-highlight max-sm:hidden"
+          className="scrub-line absolute top-4 bottom-4 -left-3 w-[3px] rounded-full bg-linear-to-b from-accent to-highlight max-sm:hidden"
         />
         <ol data-stagger className="card divide-y divide-line">
           {mobilisation.map((m) => (
@@ -579,7 +590,7 @@ export function Clients() {
                 src={c.logo}
                 alt={c.name}
                 sizes="160px"
-                className="h-14 w-auto max-w-full object-contain grayscale-[35%] transition hover:grayscale-0"
+                className="h-14 w-auto max-w-full object-contain grayscale-35 transition hover:grayscale-0"
               />
             </li>
           ))}
@@ -612,14 +623,14 @@ export function Policies() {
             <Photo
               src={photos.towerClimber}
               alt="Technician in full fall-protection harness climbing a lattice tower"
-              className="aspect-[3/4] lg:aspect-auto lg:h-full"
+              className="aspect-3/4 lg:aspect-auto lg:h-full"
               sizes="(min-width: 1024px) 22vw, 50vw"
             />
             <Photo
               src={photos.ppeKit}
               delay={2}
               alt="Hard hat, gloves, boots, goggles and hi-vis vest laid out"
-              className="aspect-[3/4] lg:aspect-auto lg:h-full"
+              className="aspect-3/4 lg:aspect-auto lg:h-full"
               sizes="(min-width: 1024px) 22vw, 50vw"
             />
           </div>
@@ -786,7 +797,7 @@ export function Contact() {
           <Photo
             src={photos.siteTeam}
             alt="Two Energy Blocks engineers in hard hats reviewing a laptop at a port"
-            className="mt-10 aspect-[3/2] max-lg:hidden"
+            className="mt-10 aspect-3/2 max-lg:hidden"
             sizes="(min-width: 1024px) 40vw, 100vw"
           />
         </div>
@@ -812,7 +823,7 @@ export function FinalCta() {
           className="object-cover opacity-30"
         />
       </div>
-      <div aria-hidden="true" className="absolute inset-0 -z-10 bg-gradient-to-b from-ink/70 via-ink/80 to-ink" />
+      <div aria-hidden="true" className="absolute inset-0 -z-10 bg-linear-to-b from-ink/70 via-ink/80 to-ink" />
       <div data-stagger>
         <LogoMark className="mx-auto h-8 w-8" />
         <h2 className="mt-8 text-[38px] leading-[1.05] font-semibold tracking-[-0.035em] sm:text-[48px]">
