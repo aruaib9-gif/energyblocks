@@ -1,12 +1,10 @@
 import "server-only";
 import { createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import { count, eq } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { connection } from "next/server";
 import { redirect } from "next/navigation";
-import { db } from "./db";
-import { admins } from "./schema";
+import { collections, newId, type AdminDoc } from "./db";
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
 
@@ -50,35 +48,28 @@ export const openLogin = () => process.env.NODE_ENV !== "production" && process.
  */
 export async function signIn(email: string, password: string) {
   email = email.trim().toLowerCase();
-  let [admin] = await db.select().from(admins).where(eq(admins.email, email)).limit(1);
+  const { admins } = await collections();
+  let admin: AdminDoc | null = await admins.findOne({ email });
 
   if (!admin) {
-    const [{ n }] = await db.select({ n: count() }).from(admins);
+    const n = await admins.countDocuments();
     const bootEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
     const bootPassword = process.env.ADMIN_PASSWORD;
     if (n === 0 && bootEmail && bootPassword && email === bootEmail && password === bootPassword) {
-      [admin] = await db
-        .insert(admins)
-        .values({ email, name: "Administrator", passwordHash: await hashPassword(password) })
-        .returning();
+      admin = await insertAdmin(email, "Administrator", password);
     }
   }
   if (openLogin()) {
     // Development convenience: any email/password signs in, creating the account on first use.
     if (!email.includes("@") || !password) return false;
-    admin ??= (
-      await db
-        .insert(admins)
-        .values({ email, name: email.split("@")[0], passwordHash: await hashPassword(password) })
-        .returning()
-    )[0];
+    admin ??= await insertAdmin(email, email.split("@")[0], password);
   } else {
     // Same work whether or not the account exists, so timing doesn't reveal valid emails.
     const ok = admin ? await checkPassword(password, admin.passwordHash) : (await hashPassword(password), false);
     if (!admin || !ok) return false;
   }
 
-  const payload = Buffer.from(JSON.stringify({ sub: admin.id, exp: Date.now() + MAX_AGE * 1000 })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ sub: admin._id, exp: Date.now() + MAX_AGE * 1000 })).toString("base64url");
   (await cookies()).set(COOKIE, `${payload}.${sign(payload)}`, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -111,12 +102,9 @@ export async function getAdmin() {
     return null;
   }
   if (!data.sub || !data.exp || data.exp < Date.now()) return null;
-  const [admin] = await db
-    .select({ id: admins.id, email: admins.email, name: admins.name })
-    .from(admins)
-    .where(eq(admins.id, data.sub))
-    .limit(1);
-  return admin ?? null;
+  const { admins } = await collections();
+  const admin = await admins.findOne({ _id: data.sub }, { projection: { email: 1, name: 1 } });
+  return admin ? { id: admin._id, email: admin.email, name: admin.name } : null;
 }
 
 /** Call at the top of every admin page, action and route. */
@@ -126,17 +114,22 @@ export async function requireAdmin() {
   return admin;
 }
 
+async function insertAdmin(email: string, name: string, password: string) {
+  const { admins } = await collections();
+  const doc: AdminDoc = { _id: newId(), email, name, passwordHash: await hashPassword(password), createdAt: Date.now() };
+  await admins.insertOne(doc);
+  return doc;
+}
+
+/** Throws a duplicate-key error (code 11000) if the email already has access. */
 export async function createAdmin(input: { email: string; name: string; password: string }) {
-  await db.insert(admins).values({
-    email: input.email.trim().toLowerCase(),
-    name: input.name.trim(),
-    passwordHash: await hashPassword(input.password),
-  });
+  await insertAdmin(input.email.trim().toLowerCase(), input.name.trim(), input.password);
 }
 
 export async function changePassword(adminId: string, current: string, next: string) {
-  const [admin] = await db.select().from(admins).where(eq(admins.id, adminId)).limit(1);
+  const { admins } = await collections();
+  const admin = await admins.findOne({ _id: adminId });
   if (!admin || !(await checkPassword(current, admin.passwordHash))) return false;
-  await db.update(admins).set({ passwordHash: await hashPassword(next) }).where(eq(admins.id, adminId));
+  await admins.updateOne({ _id: adminId }, { $set: { passwordHash: await hashPassword(next) } });
   return true;
 }

@@ -1,15 +1,20 @@
 "use server";
 
-import { eq } from "drizzle-orm";
 import { updateTag } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { db } from "@/lib/shop/db";
 import { nigerianStates } from "@/lib/shop/meta";
 import { PRODUCTS_TAG } from "@/lib/shop/catalog";
-import { CheckoutError, createOrder, findOrderForTracking, settlePayment, startPayment } from "@/lib/shop/orders";
+import {
+  CheckoutError,
+  createOrder,
+  findOrderForTracking,
+  getOrderByToken,
+  getPaymentSummary,
+  settlePayment,
+  startPayment,
+} from "@/lib/shop/orders";
 import { paymentsMode, recordSimulatedPayment } from "@/lib/shop/paystack";
-import { orders, payments } from "@/lib/shop/schema";
 import { siteUrl } from "@/lib/shop/site-url";
 
 export type CheckoutState = {
@@ -82,8 +87,9 @@ export async function placeOrder(_prev: CheckoutState, formData: FormData): Prom
 /** Starts a new payment attempt for an existing unpaid order (from the order page). */
 export async function retryPayment(formData: FormData) {
   const token = String(formData.get("token") ?? "");
-  const [order] = await db.select().from(orders).where(eq(orders.accessToken, token)).limit(1);
-  if (!order) redirect("/shop/track");
+  const data = await getOrderByToken(token);
+  if (!data) redirect("/shop/track");
+  const { order } = data;
   let url = `/shop/order/${token}?payment=error`;
   try {
     url = (await startPayment(order, await siteUrl())).authorizationUrl;
@@ -109,7 +115,7 @@ export async function simulatePayment(formData: FormData) {
   if (paymentsMode() !== "simulated") redirect("/shop");
   const reference = String(formData.get("reference") ?? "");
   const ok = formData.get("outcome") === "success";
-  const [p] = await db.select({ amountKobo: payments.amountKobo }).from(payments).where(eq(payments.reference, reference)).limit(1);
+  const p = await getPaymentSummary(reference);
   if (!p) redirect("/shop");
   recordSimulatedPayment(reference, p.amountKobo, ok);
   const result = await settlePayment(reference);

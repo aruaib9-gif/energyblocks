@@ -1,16 +1,31 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
-import { db } from "./db";
+import { after } from "next/server";
+import { collections, isDuplicateKey, newId, toApp, withTransaction, type OrderDoc } from "./db";
+import { adminNewOrderEmail, orderConfirmationEmail, sendEmail } from "./email";
 import { deliveryFeeFor } from "./meta";
 import { initializePayment, verifyPayment, type VerifiedPayment } from "./paystack";
-import { orderEvents, orderItems, orders, payments, products, type Order } from "./schema";
+import type { Order, OrderEvent } from "./schema";
+import { siteUrl } from "./site-url";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I for read-aloud order numbers
 
 function orderNumber() {
-  const bytes = randomBytes(7);
-  return "EB-" + Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join("");
+  return "EB-" + Array.from(randomBytes(7), (b) => ALPHABET[b % ALPHABET.length]).join("");
+}
+
+export const event = (status: string, note = "", actor = "system"): OrderEvent => ({
+  id: newId(),
+  status,
+  note,
+  actor,
+  createdAt: Date.now(),
+});
+
+/** Splits a stored order document into the order fields, its items and its events. */
+export function splitOrder(doc: OrderDoc) {
+  const { items, events, ...rest } = doc;
+  return { order: toApp(rest) as Order, items, events };
 }
 
 export type CheckoutInput = {
@@ -27,70 +42,89 @@ export type CheckoutInput = {
 export class CheckoutError extends Error {}
 
 /** Prices, stock and totals are always recomputed from the database — never trusted from the cart. */
-export async function createOrder(input: CheckoutInput) {
+export async function createOrder(input: CheckoutInput): Promise<Order> {
   const wanted = new Map<string, number>();
   for (const i of input.items) wanted.set(i.productId, (wanted.get(i.productId) ?? 0) + i.quantity);
   if (wanted.size === 0) throw new CheckoutError("Your cart is empty.");
 
-  const rows = await db
-    .select()
-    .from(products)
-    .where(and(inArray(products.id, [...wanted.keys()]), eq(products.active, true)));
+  const { products, orders } = await collections();
+  const rows = await products.find({ _id: { $in: [...wanted.keys()] }, active: true }).toArray();
 
-  const lines = [...wanted].map(([productId, quantity]) => {
-    const p = rows.find((r) => r.id === productId);
+  const items = [...wanted].map(([productId, quantity]) => {
+    const p = rows.find((r) => r._id === productId);
     if (!p) throw new CheckoutError("An item in your cart is no longer available. Please review your cart.");
     if (p.stock < quantity)
-      throw new CheckoutError(
-        p.stock > 0 ? `Only ${p.stock} × ${p.name} left in stock.` : `${p.name} is out of stock.`,
-      );
-    return { productId, quantity, name: p.name, priceKobo: p.priceKobo };
+      throw new CheckoutError(p.stock > 0 ? `Only ${p.stock} × ${p.name} left in stock.` : `${p.name} is out of stock.`);
+    return { id: newId(), productId, quantity, name: p.name, priceKobo: p.priceKobo };
   });
 
-  const subtotalKobo = lines.reduce((s, l) => s + l.priceKobo * l.quantity, 0);
+  const subtotalKobo = items.reduce((s, l) => s + l.priceKobo * l.quantity, 0);
   const deliveryKobo = deliveryFeeFor(input.state, subtotalKobo);
+  const now = Date.now();
 
-  return db.transaction(async (tx) => {
-    const [order] = await tx
-      .insert(orders)
-      .values({
-        number: orderNumber(),
-        accessToken: randomBytes(24).toString("base64url"),
-        name: input.name,
-        email: input.email.toLowerCase(),
-        phone: input.phone,
-        address: input.address,
-        city: input.city,
-        state: input.state,
-        notes: input.notes,
-        subtotalKobo,
-        deliveryKobo,
-        totalKobo: subtotalKobo + deliveryKobo,
-      })
-      .returning();
-    await tx.insert(orderItems).values(lines.map((l) => ({ ...l, orderId: order.id })));
-    await tx.insert(orderEvents).values({ orderId: order.id, status: "pending_payment", note: "Order placed" });
-    return order;
-  });
+  // Retry on the (very unlikely) chance of an order-number collision.
+  for (let attempt = 0; ; attempt++) {
+    const doc: OrderDoc = {
+      _id: newId(),
+      number: orderNumber(),
+      accessToken: randomBytes(24).toString("base64url"),
+      name: input.name,
+      email: input.email.toLowerCase(),
+      phone: input.phone,
+      address: input.address,
+      city: input.city,
+      state: input.state,
+      notes: input.notes,
+      subtotalKobo,
+      deliveryKobo,
+      totalKobo: subtotalKobo + deliveryKobo,
+      paymentStatus: "pending",
+      status: "pending_payment",
+      courier: "",
+      trackingNumber: "",
+      stockIssue: false,
+      paidAt: null,
+      createdAt: now,
+      updatedAt: now,
+      items,
+      events: [event("pending_payment", "Order placed")],
+    };
+    try {
+      await orders.insertOne(doc);
+      return splitOrder(doc).order;
+    } catch (e) {
+      if (isDuplicateKey(e) && attempt < 3) continue;
+      throw e;
+    }
+  }
 }
 
 /** Creates a fresh payment attempt for an unpaid order and returns where to send the customer. */
-export async function startPayment(order: Order, siteUrl: string) {
+export async function startPayment(order: Order, base: string) {
   if (order.paymentStatus === "paid") throw new CheckoutError("This order is already paid.");
   if (order.status === "cancelled") throw new CheckoutError("This order was cancelled.");
 
+  const { payments } = await collections();
   const reference = `${order.number}-${randomBytes(3).toString("hex")}`;
-  await db.insert(payments).values({
+  const now = Date.now();
+  await payments.insertOne({
+    _id: newId(),
     orderId: order.id,
     provider: "paystack",
     reference,
     amountKobo: order.totalKobo,
+    status: "initialized",
+    channel: "",
+    gatewayResponse: "",
+    paidAt: null,
+    createdAt: now,
+    updatedAt: now,
   });
   return initializePayment({
     email: order.email,
     amountKobo: order.totalKobo,
     reference,
-    callbackUrl: `${siteUrl}/shop/checkout/verify`,
+    callbackUrl: `${base}/shop/checkout/verify`,
     metadata: { order_id: order.id, order_number: order.number },
   });
 }
@@ -100,139 +134,160 @@ export type SettleResult =
   | { ok: false; reason: string; order?: Order };
 
 /**
- * Confirms a payment with the gateway and, once, marks the order paid and takes the stock.
- * Safe to call repeatedly (redirect, webhook and admin "re-verify" may all race).
+ * Confirms a payment with the gateway and, exactly once, marks the order paid, takes the
+ * stock and sends the confirmation emails. Safe to call repeatedly — the redirect, the
+ * webhook and the admin "re-check" button may all race.
  */
 export async function settlePayment(reference: string): Promise<SettleResult> {
-  const [payment] = await db.select().from(payments).where(eq(payments.reference, reference)).limit(1);
+  const { payments, orders, products } = await collections();
+  const payment = await payments.findOne({ reference });
   if (!payment) return { ok: false, reason: "Unknown payment reference." };
-  const [current] = await db.select().from(orders).where(eq(orders.id, payment.orderId)).limit(1);
+  const currentDoc = await orders.findOne({ _id: payment.orderId });
+  const current = currentDoc ? splitOrder(currentDoc).order : undefined;
+  if (!current) return { ok: false, reason: "Order not found." };
   if (payment.status === "success") return { ok: true, order: current, changedStock: false };
 
   const verified = await verifyPayment(reference);
   if (!verified) return { ok: false, reason: "Payment could not be verified yet.", order: current };
 
   if (verified.status !== "success") {
-    if (verified.status === "failed" || verified.status === "abandoned") {
-      await recordAttempt(payment.id, verified);
-    }
+    if (verified.status === "failed" || verified.status === "abandoned") await recordAttempt(payment._id, verified);
     return { ok: false, reason: verified.gatewayResponse || "Payment was not completed.", order: current };
   }
 
   if (verified.amountKobo !== payment.amountKobo || verified.currency !== "NGN") {
-    await recordAttempt(payment.id, { ...verified, status: "failed", gatewayResponse: "Amount mismatch — flagged" });
-    await db.insert(orderEvents).values({
-      orderId: payment.orderId,
-      status: "payment_flagged",
-      note: `Gateway reported ${verified.currency} ${verified.amountKobo / 100}, expected NGN ${payment.amountKobo / 100}.`,
-    });
+    await recordAttempt(payment._id, { ...verified, status: "failed", gatewayResponse: "Amount mismatch — flagged" });
+    await orders.updateOne(
+      { _id: payment.orderId },
+      {
+        $push: {
+          events: event(
+            "payment_flagged",
+            `Gateway reported ${verified.currency} ${verified.amountKobo / 100}, expected NGN ${payment.amountKobo / 100}.`,
+          ),
+        },
+      },
+    );
     return { ok: false, reason: "Payment amount did not match the order.", order: current };
   }
 
-  const result = await db.transaction(async (tx) => {
+  const outcome = await withTransaction(async (session) => {
+    const now = Date.now();
     // Claim the payment; if another request got here first, do nothing.
-    const claimed = await tx
-      .update(payments)
-      .set({
-        status: "success",
-        channel: verified.channel,
-        gatewayResponse: verified.gatewayResponse,
-        paidAt: verified.paidAt ?? Date.now(),
-        updatedAt: Date.now(),
-      })
-      .where(and(eq(payments.id, payment.id), ne(payments.status, "success")))
-      .returning({ id: payments.id });
-    if (claimed.length === 0) return { changedStock: false };
+    const claimed = await payments.updateOne(
+      { _id: payment._id, status: { $ne: "success" } },
+      {
+        $set: {
+          status: "success",
+          channel: verified.channel,
+          gatewayResponse: verified.gatewayResponse,
+          paidAt: verified.paidAt ?? now,
+          updatedAt: now,
+        },
+      },
+      { session },
+    );
+    if (claimed.modifiedCount === 0) return { changedStock: false, newlyPaid: false };
 
-    const [order] = await tx.select().from(orders).where(eq(orders.id, payment.orderId)).limit(1);
+    const order = await orders.findOne({ _id: payment.orderId }, { session });
+    if (!order) return { changedStock: false, newlyPaid: false };
     if (order.paymentStatus === "paid") {
       // A second successful charge on an already-paid order: keep it visible for a refund.
-      await tx.insert(orderEvents).values({
-        orderId: order.id,
-        status: "payment_duplicate",
-        note: `Duplicate payment ${reference} received — refund required.`,
-      });
-      return { changedStock: false };
+      await orders.updateOne(
+        { _id: order._id },
+        { $push: { events: event("payment_duplicate", `Duplicate payment ${reference} received — refund required.`) } },
+        { session },
+      );
+      return { changedStock: false, newlyPaid: false };
     }
 
     let stockIssue = false;
-    const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, order.id));
-    for (const item of items) {
+    for (const item of order.items) {
       if (!item.productId) continue;
-      const taken = await tx
-        .update(products)
-        .set({ stock: sql`${products.stock} - ${item.quantity}`, updatedAt: Date.now() })
-        .where(and(eq(products.id, item.productId), gte(products.stock, item.quantity)))
-        .returning({ id: products.id });
-      if (taken.length === 0) stockIssue = true;
+      const taken = await products.updateOne(
+        { _id: item.productId, stock: { $gte: item.quantity } },
+        { $inc: { stock: -item.quantity }, $set: { updatedAt: now } },
+        { session },
+      );
+      if (taken.modifiedCount === 0) stockIssue = true;
     }
 
     const wasCancelled = order.status === "cancelled";
-    await tx
-      .update(orders)
-      .set({
-        paymentStatus: "paid",
-        status: wasCancelled ? "cancelled" : "paid",
-        paidAt: verified.paidAt ?? Date.now(),
-        stockIssue,
-        updatedAt: Date.now(),
-      })
-      .where(eq(orders.id, order.id));
-    await tx.insert(orderEvents).values({
-      orderId: order.id,
-      status: "paid",
-      note: wasCancelled
-        ? "Payment received after the order was cancelled — refund required."
-        : `Payment confirmed via ${verified.channel || "Paystack"}.${stockIssue ? " Stock shortfall flagged for review." : ""}`,
-    });
-    return { changedStock: true };
+    await orders.updateOne(
+      { _id: order._id },
+      {
+        $set: {
+          paymentStatus: "paid",
+          status: wasCancelled ? "cancelled" : "paid",
+          paidAt: verified.paidAt ?? now,
+          stockIssue,
+          updatedAt: now,
+        },
+        $push: {
+          events: event(
+            "paid",
+            wasCancelled
+              ? "Payment received after the order was cancelled — refund required."
+              : `Payment confirmed via ${verified.channel || "Paystack"}.${stockIssue ? " Stock shortfall flagged for review." : ""}`,
+          ),
+        },
+      },
+      { session },
+    );
+    return { changedStock: true, newlyPaid: true };
   });
 
-  const [order] = await db.select().from(orders).where(eq(orders.id, payment.orderId)).limit(1);
-  return { ok: true, order, changedStock: result.changedStock };
+  const doc = (await orders.findOne({ _id: payment.orderId }))!;
+  const { order, items } = splitOrder(doc);
+
+  if (outcome.newlyPaid) {
+    const base = await siteUrl();
+    after(async () => {
+      await sendEmail(orderConfirmationEmail(order, items, `${base}/shop/order/${order.accessToken}`));
+      const alert = adminNewOrderEmail(order, items, `${base}/admin/orders/${order.id}`);
+      if (alert) await sendEmail(alert);
+    });
+  }
+  return { ok: true, order, changedStock: outcome.changedStock };
 }
 
 async function recordAttempt(paymentId: string, v: VerifiedPayment) {
-  await db
-    .update(payments)
-    .set({ status: v.status === "success" ? "success" : v.status === "abandoned" ? "abandoned" : "failed", channel: v.channel, gatewayResponse: v.gatewayResponse, updatedAt: Date.now() })
-    .where(and(eq(payments.id, paymentId), ne(payments.status, "success")));
+  const { payments } = await collections();
+  await payments.updateOne(
+    { _id: paymentId, status: { $ne: "success" } },
+    {
+      $set: {
+        status: v.status === "abandoned" ? "abandoned" : "failed",
+        channel: v.channel,
+        gatewayResponse: v.gatewayResponse,
+        updatedAt: Date.now(),
+      },
+    },
+  );
 }
 
 export async function getOrderByToken(token: string) {
-  const [order] = await db.select().from(orders).where(eq(orders.accessToken, token)).limit(1);
-  if (!order) return null;
-  const [items, events] = await Promise.all([
-    db.select().from(orderItems).where(eq(orderItems.orderId, order.id)),
-    db.select().from(orderEvents).where(eq(orderEvents.orderId, order.id)).orderBy(asc(orderEvents.createdAt)),
-  ]);
-  return { order, items, events };
+  const { orders } = await collections();
+  const doc = await orders.findOne({ accessToken: token });
+  if (!doc) return null;
+  const { order, items, events } = splitOrder(doc);
+  return { order, items, events: [...events].sort((a, b) => a.createdAt - b.createdAt) };
 }
 
 export async function findOrderForTracking(number: string, email: string) {
-  const [order] = await db
-    .select({ accessToken: orders.accessToken })
-    .from(orders)
-    .where(and(eq(orders.number, number.trim().toUpperCase()), eq(orders.email, email.trim().toLowerCase())))
-    .limit(1);
-  return order?.accessToken ?? null;
+  const { orders } = await collections();
+  const doc = await orders.findOne(
+    { number: number.trim().toUpperCase(), email: email.trim().toLowerCase() },
+    { projection: { accessToken: 1 } },
+  );
+  return doc?.accessToken ?? null;
 }
 
-export async function getPaymentAmount(reference: string) {
-  const [p] = await db
-    .select({ amountKobo: payments.amountKobo, status: payments.status, orderId: payments.orderId })
-    .from(payments)
-    .where(eq(payments.reference, reference))
-    .limit(1);
-  return p ?? null;
-}
-
-export async function latestPaymentFor(orderId: string) {
-  const [p] = await db
-    .select()
-    .from(payments)
-    .where(eq(payments.orderId, orderId))
-    .orderBy(desc(payments.createdAt))
-    .limit(1);
-  return p ?? null;
+/** For the development payment simulator. */
+export async function getPaymentSummary(reference: string) {
+  const { payments, orders } = await collections();
+  const p = await payments.findOne({ reference });
+  if (!p) return null;
+  const o = await orders.findOne({ _id: p.orderId }, { projection: { number: 1, email: 1 } });
+  return o ? { amountKobo: p.amountKobo, number: o.number, email: o.email } : null;
 }

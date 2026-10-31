@@ -1,10 +1,9 @@
-import { eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
-import { db } from "@/lib/shop/db";
 import { formatNaira } from "@/lib/shop/meta";
+import { getPaymentSummary } from "@/lib/shop/orders";
 import { paymentsMode } from "@/lib/shop/paystack";
-import { orders, payments } from "@/lib/shop/schema";
 import { simulatePayment } from "../actions";
 
 // Development-only stand-in for the Paystack payment page, used when no PAYSTACK_SECRET_KEY is set.
@@ -19,12 +18,8 @@ export default function SimulatorPage(props: PageProps<"/shop/checkout/simulator
 async function Simulator({ searchParams }: PageProps<"/shop/checkout/simulator">) {
   const reference = String((await searchParams).reference ?? "");
   if (paymentsMode() !== "simulated" || !reference) notFound();
-  const [row] = await db
-    .select({ amountKobo: payments.amountKobo, number: orders.number, email: orders.email })
-    .from(payments)
-    .innerJoin(orders, eq(orders.id, payments.orderId))
-    .where(eq(payments.reference, reference))
-    .limit(1);
+  await connection();
+  const row = await getPaymentSummary(reference);
   if (!row) notFound();
 
   return (

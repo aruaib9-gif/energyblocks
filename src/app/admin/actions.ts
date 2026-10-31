@@ -1,18 +1,37 @@
 "use server";
 
-import { and, eq, max, sql } from "drizzle-orm";
 import { refresh, updateTag } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { z } from "zod";
+import {
+  addImages,
+  applyOrderUpdate,
+  clearStockIssue,
+  getOrderForUpdate,
+  markOrderRefunded,
+  removeImage,
+  removeProduct,
+  setPrimaryImage,
+  upsertProduct,
+} from "@/lib/shop/admin";
 import { changePassword, createAdmin, requireAdmin, signIn, signOut } from "@/lib/shop/auth";
 import { PRODUCTS_TAG } from "@/lib/shop/catalog";
-import { db } from "@/lib/shop/db";
+import { isDuplicateKey } from "@/lib/shop/db";
+import { sendEmail, statusUpdateEmail } from "@/lib/shop/email";
 import { categories, nextStatuses, orderStatusLabels, slugify } from "@/lib/shop/meta";
 import { settlePayment } from "@/lib/shop/orders";
-import { orderEvents, orderItems, orders, productImages, products, type OrderStatus } from "@/lib/shop/schema";
+import type { OrderStatus } from "@/lib/shop/schema";
+import { siteUrl } from "@/lib/shop/site-url";
 
 export type FormState = { error?: string; ok?: string; fieldErrors?: Record<string, string> };
+
+const fieldErrorsOf = (issues: z.core.$ZodIssue[]) => {
+  const out: Record<string, string> = {};
+  for (const i of issues) out[String(i.path[0])] ??= i.message;
+  return out;
+};
 
 /* ---------- Sign-in, with a simple per-email/IP lockout ---------- */
 
@@ -64,16 +83,6 @@ async function readImages(formData: FormData) {
   return out;
 }
 
-async function insertImages(productId: string, images: { data: Buffer; contentType: string }[]) {
-  if (!images.length) return;
-  const [{ top }] = await db
-    .select({ top: max(productImages.position) })
-    .from(productImages)
-    .where(eq(productImages.productId, productId));
-  const start = (top ?? -1) + 1;
-  await db.insert(productImages).values(images.map((img, i) => ({ productId, ...img, position: start + i })));
-}
-
 const naira = z
   .string()
   .trim()
@@ -109,11 +118,7 @@ export async function saveProduct(_prev: FormState, formData: FormData): Promise
     active: formData.get("active") === "on",
     featured: formData.get("featured") === "on",
   });
-  if (!parsed.success) {
-    const fieldErrors: Record<string, string> = {};
-    for (const i of parsed.error.issues) fieldErrors[String(i.path[0])] ??= i.message;
-    return { error: "Please fix the highlighted fields.", fieldErrors };
-  }
+  if (!parsed.success) return { error: "Please fix the highlighted fields.", fieldErrors: fieldErrorsOf(parsed.error.issues) };
   const d = parsed.data;
   const slug = slugify(d.slug || d.name);
   if (!slug) return { fieldErrors: { slug: "Use letters or numbers" } };
@@ -125,34 +130,27 @@ export async function saveProduct(_prev: FormState, formData: FormData): Promise
     return { fieldErrors: { images: (e as Error).message } };
   }
 
-  const values = {
-    name: d.name,
-    slug,
-    category: d.category,
-    brand: d.brand,
-    sku: d.sku,
-    priceKobo: d.price,
-    compareAtKobo: d.compareAt,
-    stock: d.stock,
-    description: d.description,
-    specs: d.specs,
-    active: d.active,
-    featured: d.featured,
-    updatedAt: Date.now(),
-  };
-
-  let productId = id;
+  let productId: string;
   try {
-    if (id) {
-      await db.update(products).set(values).where(eq(products.id, id));
-    } else {
-      [{ id: productId }] = await db.insert(products).values(values).returning({ id: products.id });
-    }
+    productId = await upsertProduct(id, {
+      name: d.name,
+      slug,
+      category: d.category,
+      brand: d.brand,
+      sku: d.sku,
+      priceKobo: d.price,
+      compareAtKobo: d.compareAt,
+      stock: d.stock,
+      description: d.description,
+      specs: d.specs,
+      active: d.active,
+      featured: d.featured,
+    });
   } catch (e) {
-    if (String(e).includes("UNIQUE")) return { fieldErrors: { slug: "Another product already uses this URL slug" } };
+    if (isDuplicateKey(e)) return { fieldErrors: { slug: "Another product already uses this URL slug" } };
     throw e;
   }
-  await insertImages(productId!, images);
+  await addImages(productId, images);
   updateTag(PRODUCTS_TAG);
   if (!id) redirect(`/admin/products/${productId}?saved=1`);
   refresh();
@@ -160,26 +158,17 @@ export async function saveProduct(_prev: FormState, formData: FormData): Promise
 }
 
 export async function deleteProduct(formData: FormData) {
-  await requireAdmin();
-  const id = String(formData.get("id"));
-  const [used] = await db.select({ id: orderItems.id }).from(orderItems).where(eq(orderItems.productId, id)).limit(1);
-  if (used) {
-    // Keep order history intact: products that have been sold are hidden, not deleted.
-    await db.update(products).set({ active: false, updatedAt: Date.now() }).where(eq(products.id, id));
-  } else {
-    await db.delete(products).where(eq(products.id, id));
-  }
+  await removeProduct(String(formData.get("id")));
   updateTag(PRODUCTS_TAG);
   redirect("/admin/products");
 }
 
 export async function uploadImages(_prev: FormState, formData: FormData): Promise<FormState> {
   await requireAdmin();
-  const productId = String(formData.get("productId"));
   try {
     const images = await readImages(formData);
     if (!images.length) return { error: "Choose at least one image." };
-    await insertImages(productId, images);
+    await addImages(String(formData.get("productId")), images);
   } catch (e) {
     return { error: (e as Error).message };
   }
@@ -189,27 +178,13 @@ export async function uploadImages(_prev: FormState, formData: FormData): Promis
 }
 
 export async function deleteImage(formData: FormData) {
-  await requireAdmin();
-  await db.delete(productImages).where(eq(productImages.id, String(formData.get("imageId"))));
+  await removeImage(String(formData.get("imageId")));
   updateTag(PRODUCTS_TAG);
   refresh();
 }
 
 export async function makePrimaryImage(formData: FormData) {
-  await requireAdmin();
-  const imageId = String(formData.get("imageId"));
-  const productId = String(formData.get("productId"));
-  const imgs = await db
-    .select({ id: productImages.id })
-    .from(productImages)
-    .where(eq(productImages.productId, productId))
-    .orderBy(productImages.position, productImages.createdAt);
-  const ordered = [imageId, ...imgs.map((i) => i.id).filter((i) => i !== imageId)];
-  await db.transaction(async (tx) => {
-    for (const [position, id] of ordered.entries()) {
-      await tx.update(productImages).set({ position }).where(eq(productImages.id, id));
-    }
-  });
+  await setPrimaryImage(String(formData.get("productId")), String(formData.get("imageId")));
   updateTag(PRODUCTS_TAG);
   refresh();
 }
@@ -224,8 +199,9 @@ export async function updateOrder(_prev: FormState, formData: FormData): Promise
   const trackingNumber = String(formData.get("trackingNumber") ?? "").trim().slice(0, 80);
   const note = String(formData.get("note") ?? "").trim().slice(0, 500);
 
-  const [order] = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
-  if (!order) return { error: "Order not found." };
+  const current = await getOrderForUpdate(id);
+  if (!current) return { error: "Order not found." };
+  const { order } = current;
   if (status && !nextStatuses[order.status].includes(status)) {
     return { error: `Can't move an order from “${orderStatusLabels[order.status]}” to “${orderStatusLabels[status]}”.` };
   }
@@ -233,35 +209,18 @@ export async function updateOrder(_prev: FormState, formData: FormData): Promise
     return { fieldErrors: { courier: "Add the courier before marking as dispatched" } };
   }
 
-  await db.transaction(async (tx) => {
-    await tx
-      .update(orders)
-      .set({ ...(status ? { status } : {}), courier, trackingNumber, updatedAt: Date.now() })
-      .where(eq(orders.id, id));
-    if (status || note) {
-      await tx.insert(orderEvents).values({
-        orderId: id,
-        status: status || "note",
-        note,
-        actor: "admin",
-      });
-    }
-  });
-  // Cancelling a paid order returns its stock. (With a stock shortfall we can't tell which
-  // lines were taken, so the admin adjusts stock by hand.)
-  if (status === "cancelled" && order.paymentStatus === "paid" && !order.stockIssue) {
-    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
-    for (const i of items) {
-      if (!i.productId) continue;
-      await db
-        .update(products)
-        .set({ stock: sql`${products.stock} + ${i.quantity}`, updatedAt: Date.now() })
-        .where(eq(products.id, i.productId));
-    }
-    updateTag(PRODUCTS_TAG);
+  const result = await applyOrderUpdate(id, { status, courier, trackingNumber, note, actorName: admin.name });
+  if (!result) return { error: "Order not found." };
+  if (result.restocked) updateTag(PRODUCTS_TAG);
+
+  // Tell the customer about status changes (not about courier edits or internal notes alone).
+  if (status) {
+    const base = await siteUrl();
+    const updated = result.order;
+    after(() => sendEmail(statusUpdateEmail(updated, status, note, `${base}/shop/order/${updated.accessToken}`)));
   }
   refresh();
-  return { ok: `Saved by ${admin.name}.` };
+  return { ok: status ? `Saved — ${order.email} has been emailed.` : "Saved." };
 }
 
 export async function reverifyPayment(formData: FormData) {
@@ -273,23 +232,12 @@ export async function reverifyPayment(formData: FormData) {
 
 export async function markRefunded(formData: FormData) {
   const admin = await requireAdmin();
-  const id = String(formData.get("orderId"));
-  await db
-    .update(orders)
-    .set({ paymentStatus: "refunded", updatedAt: Date.now() })
-    .where(and(eq(orders.id, id), eq(orders.paymentStatus, "paid")));
-  await db.insert(orderEvents).values({
-    orderId: id,
-    status: "refunded",
-    note: `Marked refunded by ${admin.name}. Issue the refund from the Paystack dashboard.`,
-    actor: "admin",
-  });
+  await markOrderRefunded(String(formData.get("orderId")), admin.name);
   refresh();
 }
 
 export async function resolveStockIssue(formData: FormData) {
-  await requireAdmin();
-  await db.update(orders).set({ stockIssue: false }).where(eq(orders.id, String(formData.get("orderId"))));
+  await clearStockIssue(String(formData.get("orderId")));
   refresh();
 }
 
@@ -304,15 +252,11 @@ export async function addAdmin(_prev: FormState, formData: FormData): Promise<Fo
       password: z.string().min(10, "Use at least 10 characters"),
     })
     .safeParse(Object.fromEntries(["name", "email", "password"].map((k) => [k, String(formData.get(k) ?? "")])));
-  if (!parsed.success) {
-    const fieldErrors: Record<string, string> = {};
-    for (const i of parsed.error.issues) fieldErrors[String(i.path[0])] ??= i.message;
-    return { fieldErrors };
-  }
+  if (!parsed.success) return { fieldErrors: fieldErrorsOf(parsed.error.issues) };
   try {
     await createAdmin(parsed.data);
   } catch (e) {
-    if (String(e).includes("UNIQUE")) return { fieldErrors: { email: "That email already has access" } };
+    if (isDuplicateKey(e)) return { fieldErrors: { email: "That email already has access" } };
     throw e;
   }
   refresh();

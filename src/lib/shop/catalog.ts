@@ -1,8 +1,6 @@
 import "server-only";
-import { and, asc, desc, eq, inArray, like, or } from "drizzle-orm";
 import { cacheLife, cacheTag } from "next/cache";
-import { db } from "./db";
-import { productImages, products } from "./schema";
+import { collections, escapeRegex, toApp, type ProductDoc } from "./db";
 
 // Public catalogue reads. Cached and tagged "products"; admin edits and paid orders
 // (which change stock) invalidate the tag.
@@ -10,18 +8,18 @@ export const PRODUCTS_TAG = "products";
 
 export type CatalogProduct = Awaited<ReturnType<typeof withImages>>[number];
 
-async function withImages(rows: (typeof products.$inferSelect)[]) {
-  const ids = rows.map((r) => r.id);
-  const images = ids.length
-    ? await db
-        .select({ id: productImages.id, productId: productImages.productId })
-        .from(productImages)
-        .where(inArray(productImages.productId, ids))
-        .orderBy(asc(productImages.position), asc(productImages.createdAt))
+async function withImages(rows: ProductDoc[]) {
+  const { images } = await collections();
+  const ids = rows.map((r) => r._id);
+  const imgs = ids.length
+    ? await images
+        .find({ productId: { $in: ids } }, { projection: { _id: 1, productId: 1 } })
+        .sort({ position: 1, createdAt: 1 })
+        .toArray()
     : [];
   return rows.map((r) => ({
-    ...r,
-    imageIds: images.filter((i) => i.productId === r.id).map((i) => i.id),
+    ...toApp(r),
+    imageIds: imgs.filter((i) => i.productId === r._id).map((i) => i._id),
   }));
 }
 
@@ -30,17 +28,14 @@ export async function listProducts({ category, q }: { category?: string; q?: str
   cacheTag(PRODUCTS_TAG);
   cacheLife("hours");
 
-  const filters = [eq(products.active, true)];
-  if (category) filters.push(eq(products.category, category));
+  const { products } = await collections();
+  const filter: Record<string, unknown> = { active: true };
+  if (category) filter.category = category;
   if (q) {
-    const term = `%${q.replace(/[%_]/g, "")}%`;
-    filters.push(or(like(products.name, term), like(products.brand, term), like(products.description, term))!);
+    const re = { $regex: escapeRegex(q), $options: "i" };
+    filter.$or = [{ name: re }, { brand: re }, { description: re }];
   }
-  const rows = await db
-    .select()
-    .from(products)
-    .where(and(...filters))
-    .orderBy(desc(products.featured), asc(products.name));
+  const rows = await products.find(filter).sort({ featured: -1, name: 1 }).toArray();
   return withImages(rows);
 }
 
@@ -49,13 +44,11 @@ export async function getProductBySlug(slug: string) {
   cacheTag(PRODUCTS_TAG);
   cacheLife("hours");
 
-  const rows = await db
-    .select()
-    .from(products)
-    .where(and(eq(products.slug, slug), eq(products.active, true)))
-    .limit(1);
-  const [product] = await withImages(rows);
-  return product ?? null;
+  const { products } = await collections();
+  const row = await products.findOne({ slug, active: true });
+  if (!row) return null;
+  const [product] = await withImages([row]);
+  return product;
 }
 
 export async function getRelatedProducts(category: string, excludeId: string) {
@@ -63,11 +56,18 @@ export async function getRelatedProducts(category: string, excludeId: string) {
   cacheTag(PRODUCTS_TAG);
   cacheLife("hours");
 
-  const rows = await db
-    .select()
-    .from(products)
-    .where(and(eq(products.active, true), eq(products.category, category)))
-    .orderBy(desc(products.featured))
-    .limit(5);
-  return withImages(rows.filter((r) => r.id !== excludeId).slice(0, 4));
+  const { products } = await collections();
+  const rows = await products
+    .find({ active: true, category, _id: { $ne: excludeId } })
+    .sort({ featured: -1, name: 1 })
+    .limit(4)
+    .toArray();
+  return withImages(rows);
+}
+
+/** Raw image bytes for the image route. Not cached here — the route sets immutable HTTP caching. */
+export async function getImage(id: string) {
+  const { images } = await collections();
+  const img = await images.findOne({ _id: id }, { projection: { data: 1, contentType: 1 } });
+  return img ? { data: img.data.buffer, contentType: img.contentType } : null;
 }

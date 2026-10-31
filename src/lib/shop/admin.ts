@@ -1,167 +1,286 @@
 import "server-only";
-import { and, asc, count, desc, eq, gte, inArray, like, lte, or, sql, sum } from "drizzle-orm";
+import { Binary } from "mongodb";
 import { requireAdmin } from "./auth";
-import { db } from "./db";
-import { admins, orderEvents, orderItems, orders, payments, productImages, products, type OrderStatus } from "./schema";
+import { collections, escapeRegex, newId, toApp, withTransaction } from "./db";
+import { event, splitOrder } from "./orders";
+import type { OrderStatus, Product } from "./schema";
 
 // Admin data access. Every function re-checks the session itself, so a page or action
-// can't accidentally expose data by forgetting to.
+// can't accidentally expose or change data by forgetting to.
 
 export const LOW_STOCK = 5;
 
+/* ---------- Reads ---------- */
+
 export async function dashboardStats() {
   await requireAdmin();
+  const { orders, products } = await collections();
   const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const [[allTime], [last30], [toFulfil], [inTransit], [awaitingPayment], lowStock, recent, flagged] = await Promise.all([
-    db.select({ total: sum(orders.totalKobo), n: count() }).from(orders).where(eq(orders.paymentStatus, "paid")),
-    db
-      .select({ total: sum(orders.totalKobo), n: count() })
-      .from(orders)
-      .where(and(eq(orders.paymentStatus, "paid"), gte(orders.paidAt, since))),
-    db.select({ n: count() }).from(orders).where(inArray(orders.status, ["paid", "processing"])),
-    db.select({ n: count() }).from(orders).where(inArray(orders.status, ["shipped", "out_for_delivery"])),
-    db.select({ n: count() }).from(orders).where(eq(orders.status, "pending_payment")),
-    db
-      .select({ id: products.id, name: products.name, stock: products.stock })
-      .from(products)
-      .where(and(eq(products.active, true), lte(products.stock, LOW_STOCK)))
-      .orderBy(asc(products.stock))
-      .limit(8),
-    db.select().from(orders).orderBy(desc(orders.createdAt)).limit(8),
-    db
-      .select({ id: orders.id, number: orders.number })
-      .from(orders)
-      .where(
-        or(
-          eq(orders.stockIssue, true),
-          sql`exists (select 1 from ${orderEvents} e where e.order_id = ${orders.id} and e.status in ('payment_flagged','payment_duplicate'))`,
-          and(eq(orders.status, "cancelled"), eq(orders.paymentStatus, "paid")),
-        ),
+  const sumPaid = (match: Record<string, unknown>) =>
+    orders
+      .aggregate<{ total: number; n: number }>([
+        { $match: { paymentStatus: "paid", ...match } },
+        { $group: { _id: null, total: { $sum: "$totalKobo" }, n: { $sum: 1 } } },
+      ])
+      .toArray()
+      .then((r) => r[0] ?? { total: 0, n: 0 });
+
+  const [allTime, last30, toFulfil, inTransit, awaitingPayment, lowStock, recent, flagged] = await Promise.all([
+    sumPaid({}),
+    sumPaid({ paidAt: { $gte: since } }),
+    orders.countDocuments({ status: { $in: ["paid", "processing"] } }),
+    orders.countDocuments({ status: { $in: ["shipped", "out_for_delivery"] } }),
+    orders.countDocuments({ status: "pending_payment" }),
+    products
+      .find({ active: true, stock: { $lte: LOW_STOCK } }, { projection: { name: 1, stock: 1 } })
+      .sort({ stock: 1 })
+      .limit(8)
+      .toArray(),
+    orders.find({}, { projection: { items: 0, events: 0 } }).sort({ createdAt: -1 }).limit(8).toArray(),
+    orders
+      .find(
+        {
+          $or: [
+            { stockIssue: true },
+            { "events.status": { $in: ["payment_flagged", "payment_duplicate"] } },
+            { status: "cancelled", paymentStatus: "paid" },
+          ],
+        },
+        { projection: { number: 1 } },
       )
-      .limit(10),
+      .limit(10)
+      .toArray(),
   ]);
   return {
-    revenueKobo: Number(allTime.total ?? 0),
+    revenueKobo: allTime.total,
     paidOrders: allTime.n,
-    revenue30Kobo: Number(last30.total ?? 0),
+    revenue30Kobo: last30.total,
     paidOrders30: last30.n,
-    toFulfil: toFulfil.n,
-    inTransit: inTransit.n,
-    awaitingPayment: awaitingPayment.n,
-    lowStock,
-    recent,
-    flagged,
+    toFulfil,
+    inTransit,
+    awaitingPayment,
+    lowStock: lowStock.map((p) => ({ id: p._id, name: p.name, stock: p.stock })),
+    recent: recent.map((o) => splitOrder({ ...o, items: [], events: [] }).order),
+    flagged: flagged.map((o) => ({ id: o._id, number: o.number })),
   };
 }
 
 export async function adminListProducts(q?: string) {
   await requireAdmin();
-  const rows = await db
-    .select({
-      id: products.id,
-      name: products.name,
-      slug: products.slug,
-      category: products.category,
-      sku: products.sku,
-      priceKobo: products.priceKobo,
-      stock: products.stock,
-      active: products.active,
-      featured: products.featured,
-      updatedAt: products.updatedAt,
-      imageId: sql<string | null>`(select id from ${productImages} i where i.product_id = ${products.id} order by i.position, i.created_at limit 1)`,
-    })
-    .from(products)
-    .where(q ? or(like(products.name, `%${q}%`), like(products.sku, `%${q}%`)) : undefined)
-    .orderBy(asc(products.name));
-  return rows;
+  const { products, images } = await collections();
+  const filter = q ? { $or: [{ name: { $regex: escapeRegex(q), $options: "i" } }, { sku: { $regex: escapeRegex(q), $options: "i" } }] } : {};
+  const rows = await products.find(filter).sort({ name: 1 }).toArray();
+  const firsts = await images
+    .aggregate<{ _id: string; imageId: string }>([
+      { $match: { productId: { $in: rows.map((r) => r._id) } } },
+      { $sort: { position: 1, createdAt: 1 } },
+      { $group: { _id: "$productId", imageId: { $first: "$_id" } } },
+    ])
+    .toArray();
+  const firstFor = new Map(firsts.map((f) => [f._id, f.imageId]));
+  return rows.map((r) => ({ ...toApp(r), imageId: firstFor.get(r._id) ?? null }));
 }
 
 export async function adminGetProduct(id: string) {
   await requireAdmin();
-  const [product] = await db.select().from(products).where(eq(products.id, id)).limit(1);
+  const { products, images } = await collections();
+  const product = await products.findOne({ _id: id });
   if (!product) return null;
-  const images = await db
-    .select({ id: productImages.id, position: productImages.position })
-    .from(productImages)
-    .where(eq(productImages.productId, id))
-    .orderBy(asc(productImages.position), asc(productImages.createdAt));
-  return { product, images };
+  const imgs = await images
+    .find({ productId: id }, { projection: { _id: 1, position: 1 } })
+    .sort({ position: 1, createdAt: 1 })
+    .toArray();
+  return { product: toApp(product) as Product, images: imgs.map((i) => ({ id: i._id, position: i.position })) };
 }
 
 export async function adminListOrders({ status, q }: { status?: string; q?: string }) {
   await requireAdmin();
-  const filters = [];
-  if (status === "flagged") filters.push(eq(orders.stockIssue, true));
-  else if (status) filters.push(eq(orders.status, status as OrderStatus));
+  const { orders } = await collections();
+  const filter: Record<string, unknown> = {};
+  if (status === "flagged") filter.stockIssue = true;
+  else if (status) filter.status = status;
   if (q) {
-    const term = `%${q.trim()}%`;
-    filters.push(or(like(orders.number, term), like(orders.email, term), like(orders.name, term), like(orders.phone, term))!);
+    const re = { $regex: escapeRegex(q.trim()), $options: "i" };
+    filter.$or = [{ number: re }, { email: re }, { name: re }, { phone: re }];
   }
   const [rows, counts] = await Promise.all([
-    db
-      .select({
-        id: orders.id,
-        number: orders.number,
-        name: orders.name,
-        email: orders.email,
-        state: orders.state,
-        totalKobo: orders.totalKobo,
-        status: orders.status,
-        paymentStatus: orders.paymentStatus,
-        stockIssue: orders.stockIssue,
-        createdAt: orders.createdAt,
-        itemCount: sql<number>`(select coalesce(sum(quantity),0) from ${orderItems} oi where oi.order_id = ${orders.id})`,
-      })
-      .from(orders)
-      .where(filters.length ? and(...filters) : undefined)
-      .orderBy(desc(orders.createdAt))
-      .limit(200),
-    db.select({ status: orders.status, n: count() }).from(orders).groupBy(orders.status),
+    orders.find(filter, { projection: { events: 0 } }).sort({ createdAt: -1 }).limit(200).toArray(),
+    orders.aggregate<{ _id: string; n: number }>([{ $group: { _id: "$status", n: { $sum: 1 } } }]).toArray(),
   ]);
-  return { rows, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) as Record<string, number> };
+  return {
+    rows: rows.map((o) => ({
+      ...splitOrder({ ...o, events: [] }).order,
+      itemCount: o.items.reduce((n, i) => n + i.quantity, 0),
+    })),
+    counts: Object.fromEntries(counts.map((c) => [c._id, c.n])) as Record<string, number>,
+  };
 }
 
 export async function adminGetOrder(id: string) {
   await requireAdmin();
-  const [order] = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
-  if (!order) return null;
-  const [items, events, attempts] = await Promise.all([
-    db.select().from(orderItems).where(eq(orderItems.orderId, id)),
-    db.select().from(orderEvents).where(eq(orderEvents.orderId, id)).orderBy(desc(orderEvents.createdAt)),
-    db.select().from(payments).where(eq(payments.orderId, id)).orderBy(desc(payments.createdAt)),
-  ]);
-  return { order, items, events, attempts };
+  const { orders, payments } = await collections();
+  const doc = await orders.findOne({ _id: id });
+  if (!doc) return null;
+  const { order, items, events } = splitOrder(doc);
+  const attempts = await payments.find({ orderId: id }).sort({ createdAt: -1 }).toArray();
+  return {
+    order,
+    items,
+    events: [...events].sort((a, b) => b.createdAt - a.createdAt),
+    attempts: attempts.map(toApp),
+  };
 }
 
 export async function adminListPayments(status?: string) {
   await requireAdmin();
-  const valid = ["initialized", "success", "failed", "abandoned"] as const;
-  const s = valid.find((v) => v === status);
-  return db
-    .select({
-      id: payments.id,
-      reference: payments.reference,
-      amountKobo: payments.amountKobo,
-      status: payments.status,
-      channel: payments.channel,
-      gatewayResponse: payments.gatewayResponse,
-      paidAt: payments.paidAt,
-      createdAt: payments.createdAt,
-      orderId: orders.id,
-      orderNumber: orders.number,
-      email: orders.email,
-    })
-    .from(payments)
-    .innerJoin(orders, eq(orders.id, payments.orderId))
-    .where(s ? eq(payments.status, s) : undefined)
-    .orderBy(desc(payments.createdAt))
-    .limit(300);
+  const { payments, orders } = await collections();
+  const valid = ["initialized", "success", "failed", "abandoned"];
+  const rows = await payments
+    .find(status && valid.includes(status) ? { status: status as "success" } : {})
+    .sort({ createdAt: -1 })
+    .limit(300)
+    .toArray();
+  const os = await orders
+    .find({ _id: { $in: [...new Set(rows.map((r) => r.orderId))] } }, { projection: { number: 1, email: 1 } })
+    .toArray();
+  const byId = new Map(os.map((o) => [o._id, o]));
+  return rows.map((p) => ({
+    ...toApp(p),
+    orderNumber: byId.get(p.orderId)?.number ?? "—",
+    email: byId.get(p.orderId)?.email ?? "",
+  }));
 }
 
 export async function adminListAdmins() {
   await requireAdmin();
-  return db
-    .select({ id: admins.id, name: admins.name, email: admins.email, createdAt: admins.createdAt })
-    .from(admins)
-    .orderBy(asc(admins.createdAt));
+  const { admins } = await collections();
+  const rows = await admins.find({}, { projection: { passwordHash: 0 } }).sort({ createdAt: 1 }).toArray();
+  return rows.map((a) => ({ id: a._id, name: a.name, email: a.email, createdAt: a.createdAt }));
+}
+
+/* ---------- Products ---------- */
+
+export type ProductInput = Omit<Product, "id" | "createdAt" | "updatedAt">;
+
+/** Creates or updates a product. Throws a duplicate-key error (11000) if the slug is taken. */
+export async function upsertProduct(id: string | null, input: ProductInput) {
+  await requireAdmin();
+  const { products } = await collections();
+  const now = Date.now();
+  if (id) {
+    await products.updateOne({ _id: id }, { $set: { ...input, updatedAt: now } });
+    return id;
+  }
+  const _id = newId();
+  await products.insertOne({ _id, ...input, createdAt: now, updatedAt: now });
+  return _id;
+}
+
+/** Products that have been sold are hidden rather than deleted, to keep order history intact. */
+export async function removeProduct(id: string) {
+  await requireAdmin();
+  const { products, orders, images } = await collections();
+  const sold = await orders.findOne({ "items.productId": id }, { projection: { _id: 1 } });
+  if (sold) {
+    await products.updateOne({ _id: id }, { $set: { active: false, updatedAt: Date.now() } });
+  } else {
+    await products.deleteOne({ _id: id });
+    await images.deleteMany({ productId: id });
+  }
+}
+
+export async function addImages(productId: string, files: { data: Buffer; contentType: string }[]) {
+  await requireAdmin();
+  if (!files.length) return;
+  const { images } = await collections();
+  const last = await images.find({ productId }).sort({ position: -1 }).limit(1).next();
+  const start = (last?.position ?? -1) + 1;
+  await images.insertMany(
+    files.map((f, i) => ({
+      _id: newId(),
+      productId,
+      data: new Binary(f.data),
+      contentType: f.contentType,
+      position: start + i,
+      createdAt: Date.now(),
+    })),
+  );
+}
+
+export async function removeImage(imageId: string) {
+  await requireAdmin();
+  const { images } = await collections();
+  await images.deleteOne({ _id: imageId });
+}
+
+export async function setPrimaryImage(productId: string, imageId: string) {
+  await requireAdmin();
+  const { images } = await collections();
+  const imgs = await images.find({ productId }, { projection: { _id: 1 } }).sort({ position: 1, createdAt: 1 }).toArray();
+  const ordered = [imageId, ...imgs.map((i) => i._id).filter((i) => i !== imageId)];
+  await images.bulkWrite(ordered.map((id, position) => ({ updateOne: { filter: { _id: id }, update: { $set: { position } } } })));
+}
+
+/* ---------- Orders ---------- */
+
+export async function getOrderForUpdate(id: string) {
+  await requireAdmin();
+  const { orders } = await collections();
+  const doc = await orders.findOne({ _id: id });
+  return doc ? splitOrder(doc) : null;
+}
+
+/** Applies a status/courier change; cancelling a paid order returns its stock. */
+export async function applyOrderUpdate(
+  id: string,
+  change: { status: OrderStatus | ""; courier: string; trackingNumber: string; note: string; actorName: string },
+) {
+  await requireAdmin();
+  const { orders, products } = await collections();
+  return withTransaction(async (session) => {
+    const doc = await orders.findOne({ _id: id }, { session });
+    if (!doc) return null;
+    const update: Record<string, unknown> = {
+      $set: {
+        ...(change.status ? { status: change.status } : {}),
+        courier: change.courier,
+        trackingNumber: change.trackingNumber,
+        updatedAt: Date.now(),
+      },
+    };
+    if (change.status || change.note) {
+      update.$push = { events: event(change.status || "note", change.note, "admin") };
+    }
+    await orders.updateOne({ _id: id }, update, { session });
+
+    // With a stock shortfall we can't tell which lines were taken, so the admin adjusts by hand.
+    let restocked = false;
+    if (change.status === "cancelled" && doc.paymentStatus === "paid" && !doc.stockIssue) {
+      for (const i of doc.items) {
+        if (!i.productId) continue;
+        await products.updateOne({ _id: i.productId }, { $inc: { stock: i.quantity }, $set: { updatedAt: Date.now() } }, { session });
+      }
+      restocked = true;
+    }
+    const after = (await orders.findOne({ _id: id }, { session }))!;
+    return { ...splitOrder(after), restocked };
+  });
+}
+
+export async function markOrderRefunded(id: string, adminName: string) {
+  await requireAdmin();
+  const { orders } = await collections();
+  await orders.updateOne(
+    { _id: id, paymentStatus: "paid" },
+    {
+      $set: { paymentStatus: "refunded", updatedAt: Date.now() },
+      $push: { events: event("refunded", `Marked refunded by ${adminName}. Issue the refund from the Paystack dashboard.`, "admin") },
+    },
+  );
+}
+
+export async function clearStockIssue(id: string) {
+  await requireAdmin();
+  const { orders } = await collections();
+  await orders.updateOne({ _id: id }, { $set: { stockIssue: false } });
 }

@@ -1,9 +1,17 @@
 // Creates (or resets the password of) a marketplace admin.
 // Usage: npm run admin:create -- you@energyblocks.com "Your Name"
 // The password is read from the ADMIN_NEW_PASSWORD env var or prompted for.
-import { createClient } from "@libsql/client";
+import { MongoClient } from "mongodb";
 import { randomBytes, randomUUID, scryptSync } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
+
+if (existsSync(".env.local")) {
+  for (const line of readFileSync(".env.local", "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+}
 
 const [email, name = "Administrator"] = process.argv.slice(2);
 if (!email || !email.includes("@")) {
@@ -25,13 +33,20 @@ if (!password || password.length < 10) {
 const salt = randomBytes(16);
 const hash = `scrypt$${salt.toString("base64")}$${scryptSync(password, salt, 64).toString("base64")}`;
 
-const db = createClient({
-  url: process.env.DATABASE_URL ?? "file:local.db",
-  authToken: process.env.DATABASE_AUTH_TOKEN,
-});
-await db.execute({
-  sql: `INSERT INTO admins (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash, name = excluded.name`,
-  args: [randomUUID(), email.trim().toLowerCase(), name, hash, Date.now()],
-});
+if (!process.env.MONGODB_URI) {
+  console.error("MONGODB_URI is not set (add it to .env.local).");
+  process.exit(1);
+}
+const client = new MongoClient(process.env.MONGODB_URI);
+const admins = client.db(process.env.MONGODB_DB || "energyblocks").collection("admins");
+await admins.createIndex({ email: 1 }, { unique: true });
+await admins.updateOne(
+  { email: email.trim().toLowerCase() },
+  {
+    $set: { name, passwordHash: hash },
+    $setOnInsert: { _id: randomUUID(), email: email.trim().toLowerCase(), createdAt: Date.now() },
+  },
+  { upsert: true },
+);
+await client.close();
 console.log(`Admin ${email} is ready. Sign in at /admin/login`);

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense } from "react";
 import { Icon } from "@/components/icons";
 import { ClearCartOnPaid } from "@/components/shop/clear-cart";
@@ -22,6 +23,7 @@ export default function OrderPage(props: PageProps<"/shop/order/[token]">) {
 
 async function Order({ params, searchParams }: PageProps<"/shop/order/[token]">) {
   const [{ token }, sp] = await Promise.all([params, searchParams]);
+  await connection(); // live order data — always read at request time
   const data = await getOrderByToken(token);
   if (!data) notFound();
   const { order, items, events } = data;

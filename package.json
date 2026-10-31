@@ -7,14 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "db:push": "drizzle-kit push",
     "db:seed": "node scripts/seed-shop.mjs",
-    "db:studio": "drizzle-kit studio",
-    "admin:create": "node scripts/create-admin.mjs"
+    "admin:create": "node scripts/create-admin.mjs",
+    "db:setup": "node scripts/seed-shop.mjs --indexes-only"
   },
   "dependencies": {
-    "@libsql/client": "^0.18.0",
-    "drizzle-orm": "^0.45.4",
+    "mongodb": "^7.8.0",
     "next": "16.4.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -26,7 +24,6 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
     "tailwindcss": "^4",

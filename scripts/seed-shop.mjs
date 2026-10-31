@@ -1,13 +1,44 @@
-// Seeds the marketplace with sample products so the shop isn't empty in development.
+// Seeds the marketplace with sample products and creates the MongoDB indexes.
 // Prices and stock are PLACEHOLDERS — review every product in /admin before going live.
-// Usage: npm run db:seed   (skips products whose slug already exists)
-import { createClient } from "@libsql/client";
+// Usage:
+//   npm run db:setup   create indexes only
+//   npm run db:seed    create indexes + sample products (skips slugs that already exist)
+// Reads MONGODB_URI / MONGODB_DB from the environment or .env.local.
+import { MongoClient } from "mongodb";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 
-const db = createClient({
-  url: process.env.DATABASE_URL ?? "file:local.db",
-  authToken: process.env.DATABASE_AUTH_TOKEN,
-});
+if (existsSync(".env.local")) {
+  for (const line of readFileSync(".env.local", "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+}
+if (!process.env.MONGODB_URI) {
+  console.error("MONGODB_URI is not set (add it to .env.local).");
+  process.exit(1);
+}
+
+const client = new MongoClient(process.env.MONGODB_URI);
+const db = client.db(process.env.MONGODB_DB || "energyblocks");
+
+await Promise.all([
+  db.collection("products").createIndexes([{ key: { slug: 1 }, unique: true }, { key: { category: 1, active: 1 } }]),
+  db.collection("product_images").createIndex({ productId: 1, position: 1 }),
+  db.collection("orders").createIndexes([
+    { key: { number: 1 }, unique: true },
+    { key: { accessToken: 1 }, unique: true },
+    { key: { email: 1 } },
+    { key: { status: 1, createdAt: -1 } },
+  ]),
+  db.collection("payments").createIndexes([{ key: { reference: 1 }, unique: true }, { key: { orderId: 1 } }]),
+  db.collection("admins").createIndex({ email: 1 }, { unique: true }),
+]);
+console.log(`Indexes ready on database "${db.databaseName}".`);
+if (process.argv.includes("--indexes-only")) {
+  await client.close();
+  process.exit(0);
+}
 
 const ngn = (n) => n * 100;
 
@@ -36,13 +67,32 @@ const items = [
 const slugify = (s) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 
 let added = 0;
-for (const [category, name, description, specs, price, stock, featured] of items) {
-  const slug = slugify(name);
-  const res = await db.execute({
-    sql: `INSERT OR IGNORE INTO products (id, slug, name, description, category, brand, sku, specs, price_kobo, stock, active, featured, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 1, ?, ?, ?)`,
-    args: [randomUUID(), slug, name, description, category, `SAMPLE-${added + 1}`, specs, ngn(price), stock, featured ? 1 : 0, Date.now(), Date.now()],
-  });
-  added += res.rowsAffected;
+for (const [i, [category, name, description, specs, price, stock, featured]] of items.entries()) {
+  const now = Date.now();
+  const res = await db.collection("products").updateOne(
+    { slug: slugify(name) },
+    {
+      $setOnInsert: {
+        _id: randomUUID(),
+        slug: slugify(name),
+        name,
+        description,
+        category,
+        brand: "",
+        sku: `SAMPLE-${i + 1}`,
+        specs,
+        priceKobo: ngn(price),
+        compareAtKobo: null,
+        stock,
+        active: true,
+        featured,
+        createdAt: now,
+        updatedAt: now,
+      },
+    },
+    { upsert: true },
+  );
+  added += res.upsertedCount;
 }
 console.log(`Seeded ${added} sample products (placeholder prices — review in /admin).`);
+await client.close();
